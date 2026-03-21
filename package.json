@@ -1,0 +1,130 @@
+{
+  "name": "windsurf-assistant",
+  "displayName": "Windsurf小助手",
+  "description": "无感号池引擎 · 主动容量探测 · 即时切换 · 速率拦截 · 智能轮转 · 零中断",
+  "version": "1.0.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "windsurf-assistant",
+          "title": "Windsurf小助手",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "windsurf-assistant": [
+        {
+          "id": "windsurf-assistant.assistantView",
+          "name": "助手",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "wam.switchAccount",
+        "title": "切换账号",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.refreshCredits",
+        "title": "刷新积分",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.openPanel",
+        "title": "打开管理面板",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.switchMode",
+        "title": "切换模式 (本地/中转)",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.reprobeProxy",
+        "title": "重新探测代理",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.resetFingerprint",
+        "title": "重置设备指纹",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.panicSwitch",
+        "title": "紧急切换 (限流应急)",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.batchAdd",
+        "title": "批量添加账号",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.refreshAllCredits",
+        "title": "刷新全部积分并轮转",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.smartRotate",
+        "title": "智能轮转 (查全部·切最优)",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.importAccounts",
+        "title": "导入账号",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.initWorkspace",
+        "title": "工作区配置 (智慧部署+源启动)",
+        "category": "Windsurf小助手"
+      }
+    ],
+    "configuration": {
+      "title": "Windsurf小助手",
+      "properties": {
+        "wam.autoRotate": {
+          "type": "boolean",
+          "default": true,
+          "description": "积分不足时自动切换到最高积分账号"
+        },
+        "wam.rotateFingerprint": {
+          "type": "boolean",
+          "default": true,
+          "description": "切号时自动轮转设备指纹 (防止服务端关联多账号到同一设备)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package --no-dependencies --allow-missing-repository",
+    "install-ext": "vsce package --no-dependencies --allow-missing-repository -o windsurf-assistant.vsix && code --install-extension windsurf-assistant.vsix",
+    "fortress": "node scripts/fortress.js",
+    "fortress:dev": "node scripts/fortress.js --level dev",
+    "fortress:low": "node scripts/fortress.js --level low",
+    "fortress:max": "node scripts/fortress.js --level max",
+    "fortress:analyze": "node scripts/fortress.js --analyze",
+    "fortress:noinstall": "node scripts/fortress.js --no-install"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.0",
+    "webpack": "^5.97.0",
+    "webpack-cli": "^6.0.0",
+    "javascript-obfuscator": "^4.1.1"
+  }
+}

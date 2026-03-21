@@ -1,0 +1,14 @@
+# 构建产物
+dist/
+*.vsix
+
+# 依赖
+node_modules/
+
+# 缓存
+__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
+Thumbs.db

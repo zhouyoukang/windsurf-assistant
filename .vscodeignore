@@ -1,0 +1,14 @@
+_archive/**
+node_modules/**
+.git/**
+.gitignore
+*.vsix
+**/*.map
+_*.js
+_*.py
+*.py
+多模型协作/**
+package-lock.json
+*.md
+!LICENSE*
+webpack.config.js
