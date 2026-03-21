@@ -6,7 +6,7 @@
 
 ## 一、本源
 
-**windsurf-assistant v1.0.0** — Windsurf账号池管理VSIX扩展。
+**windsurf-assistant v1.0.0** — 第三方VSIX（53.9KB，"小黄云"168666okfa.xyz发布），一切的根。
 
 ### 认证链（四步，系统心脏）
 
@@ -42,18 +42,19 @@ Step 4: GetPlanStatus(idToken) → protobuf解析 → credits/quota
   T2-A: effectiveRemaining ≤ 15%  | T2-B: rate_limited状态
   T2-C: Opus预算(T1M=1/T=2/R=3)  | T2-D: UFEF过期紧急
   L1: context key检测(2s)          | L3: cachedPlanInfo监控(10s)
+
 ```
 
-### 核心增强
+### WAM对本源的增强
 
-| 维度 | 能力                                                |
-| ---- | --------------------------------------------------- |
-| 认证 | 双Firebase Key + CONNECT tunnel + relay降级         |
-| 积分 | 完整protobuf(credits+quota+isDevin)                 |
-| 注入 | 4层(S0 idToken → S1 OTAT → S2 apiKey → S3 DB直写)  |
-| 指纹 | 切号前6ID热轮转(storage.json+state.vscdb双写)       |
-| 预防 | L5 gRPC容量探测 + 配额阈值 + 启发式降级           |
-| 号池 | 自适应轮询 + 多窗口协调 + 并发Tab感知             |
+| 维度 | 本源             | WAM                                               |
+| ---- | ---------------- | ------------------------------------------------- |
+| 认证 | 仅relay          | 双Firebase Key + CONNECT tunnel + relay降级       |
+| 积分 | 尾部扫描         | 完整protobuf(credits+quota+isDevin)               |
+| 注入 | 遍历authCommands | 4层(S0 idToken → S1 OTAT → S2 apiKey → S3 DB直写) |
+| 指纹 | 无               | 切号前6ID热轮转(storage.json+state.vscdb双写)     |
+| 预防 | 无               | L5 gRPC容量探测 + 配额阈值 + 启发式降级           |
+| 号池 | 无               | 自适应轮询 + 多窗口协调 + 并发Tab感知             |
 
 ---
 
@@ -98,6 +99,13 @@ windsurf-assistant/
 
 ```
 道法自然，万法归宗。回归本源之道。
+
+逆向者攻击五根:
+  视(静态分析)    → L2标识符毁灭 + L3控制流坍缩 + L4字符串加密 + L11 AST污染
+  听(动态调试)    → L9时序门 + L9反Hook + L6自卫
+  触(自动化工具)  → L11伪解码器 + L11 Proxy/Symbol + L8不透明谓词(3层)
+  嗅(模式搜索)    → L4碎片化 + L5死代码 + L7三级诱饵 + L8多态变形
+  味(篡改提取)    → L10构建指纹 + L12跨层互锁 + L9完整性守护
 
 12层:
   L1  结构消解    — Webpack bundling, 5模块→单文件
