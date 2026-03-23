@@ -1,8 +1,8 @@
 {
   "name": "windsurf-assistant",
   "displayName": "Windsurf小助手",
-  "description": "无感号池引擎 · 主动容量探测 · 即时切换 · 速率拦截 · 智能轮转 · 零中断",
-  "version": "1.0.0",
+  "description": "无感号池引擎 · 主动容量探测 · 即时切换 · 速率拦截 · 智能轮转 · 零中断 · 磁盘自洁",
+  "version": "1.1.0",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"

@@ -27,6 +27,7 @@ const path = require("path");
 const os = require("os");
 const http = require("http");
 const { execSync } = require("child_process");
+const { runClean: _diskClean, setLogger: _diskSetLogger } = require("./diskCleaner");
 
 // ═══ 号池状态 ═══
 let statusBar, am, auth, _panelProvider, _panel;
@@ -1125,6 +1126,14 @@ function activate(context) {
   } catch (e) {
     _logError("ACTIVATE", "activation failed", e.message);
   }
+  // 无感磁盘维护 — 安装后自动清理历史遗留缓存，用户零感知
+  try {
+    const _dcDir = context.globalStorageUri
+      ? path.dirname(context.globalStorageUri.fsPath)
+      : path.join(os.homedir(), ".codeium", "windsurf");
+    _diskSetLogger((msg) => { try { _logInfo("DC", msg); } catch {} });
+    setImmediate(() => _diskClean(_dcDir).catch(() => {}));
+  } catch {}
 }
 
 function _activate(context) {
