@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * 无感切号 · 堡垒构建系统 (Fortress Build System)
  * 
