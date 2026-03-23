@@ -5,6 +5,20 @@
  *
  * 根因: Windsurf历史版本遗留大量implicit cache (.pb文件)、
  *       日志、CachedData、GPUCache等，积累可达数十GB。
+ *       本插件旧版本升级后残留旧目录，Codeium LS旧二进制累积。
+ *
+ * 11类清理目标:
+ *   1. implicit .pb cache (最大元凶，3天)
+ *   2. Windsurf日志 (7天)
+ *   3. CachedData旧版本bundle (14天)
+ *   4. GPUCache (30天)
+ *   5. Codeium indexer日志 (3-7天)
+ *   6. workspaceStorage过期工作区 (60天)
+ *   7. 旧版windsurf-assistant扩展目录 (仅保留最新版) ← 根源修复
+ *   8. 旧版Codeium LS二进制 (保留最新2版)
+ *   9. Crash dumps崩溃报告 (7天)
+ *  10. Extension Host日志子目录 (7天)
+ *  11. Windows更新缓存 (7天)
  *
  * 策略:
  *   - 安装/首次激活后立即执行一次深度清理
@@ -152,6 +166,88 @@ function _getCleanTargets() {
     mode: "subdirs",
   });
 
+  // ══════════════════════════════════════════════════════
+  // 7. 旧版windsurf-assistant扩展目录 — 本插件根源问题
+  //    升级后旧版目录残留在extensions/下，每版含dist+data可达数MB
+  //    仅保留当前运行版本，其余全部清理
+  // ══════════════════════════════════════════════════════
+  const extBase =
+    p === "win32"
+      ? path.join(home, ".windsurf", "extensions")
+      : p === "darwin"
+        ? path.join(home, ".windsurf", "extensions")
+        : path.join(home, ".windsurf", "extensions");
+  T.push({
+    dir: extBase,
+    ext: null,
+    maxAgeDays: 0,
+    description: "旧版windsurf-assistant",
+    mode: "old-self",
+  });
+
+  // ══════════════════════════════════════════════════════
+  // 8. 旧版Codeium Language Server二进制
+  //    每次LS升级都下载新版本(100MB+)，旧版永不清理
+  //    ~/.codeium/windsurf/ 下有多个版本号目录
+  // ══════════════════════════════════════════════════════
+  T.push({
+    dir: path.join(home, ".codeium", "windsurf"),
+    ext: null,
+    maxAgeDays: 0,
+    description: "旧版Codeium LS",
+    mode: "old-ls",
+  });
+
+  // ══════════════════════════════════════════════════════
+  // 9. Windsurf崩溃报告 / crash dumps
+  // ══════════════════════════════════════════════════════
+  const crashDirs =
+    p === "win32"
+      ? [
+          path.join(home, "AppData", "Roaming", "Windsurf", "Crashpad", "completed"),
+          path.join(home, "AppData", "Roaming", "Windsurf", "Crash Reports"),
+        ]
+      : p === "darwin"
+        ? [
+            path.join(home, "Library", "Application Support", "Windsurf", "Crashpad", "completed"),
+          ]
+        : [
+            path.join(home, ".config", "Windsurf", "Crashpad", "completed"),
+          ];
+  for (const d of crashDirs) {
+    T.push({ dir: d, ext: null, maxAgeDays: 7, description: "crash dumps", mode: "allfiles" });
+  }
+
+  // ══════════════════════════════════════════════════════
+  // 10. Extension Host日志 — exthost输出日志累积
+  // ══════════════════════════════════════════════════════
+  const exthostLogDir =
+    p === "win32"
+      ? path.join(home, "AppData", "Roaming", "Windsurf", "logs")
+      : p === "darwin"
+        ? path.join(home, "Library", "Application Support", "Windsurf", "logs")
+        : path.join(home, ".config", "Windsurf", "logs");
+  T.push({
+    dir: exthostLogDir,
+    ext: null,
+    maxAgeDays: 7,
+    description: "exthost logs",
+    mode: "subdirs",
+  });
+
+  // ══════════════════════════════════════════════════════
+  // 11. Windsurf更新缓存 / 旧版安装包残留
+  // ══════════════════════════════════════════════════════
+  if (p === "win32") {
+    T.push({
+      dir: path.join(home, "AppData", "Local", "windsurf-updater"),
+      ext: null,
+      maxAgeDays: 7,
+      description: "update cache",
+      mode: "allfiles",
+    });
+  }
+
   return T;
 }
 
@@ -198,7 +294,48 @@ function _cleanTarget(target) {
   const cutoff = Date.now() - maxAgeDays * 86400000;
 
   try {
-    if (mode === "subdirs") {
+    if (mode === "old-self") {
+      // 特殊模式: 清理本插件旧版本目录
+      // extensions/下匹配 *windsurf-assistant-* 的目录，保留最新版
+      const PREFIX = "windsurf-assistant-";
+      const dirs = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        // 匹配 publisher.windsurf-assistant-x.y.z 格式
+        if (entry.name.includes(PREFIX)) {
+          const sub = path.join(dir, entry.name);
+          try { dirs.push({ name: entry.name, path: sub, mtime: fs.statSync(sub).mtimeMs }); } catch {}
+        }
+      }
+      if (dirs.length > 1) {
+        // 按修改时间降序，保留最新的
+        dirs.sort((a, b) => b.mtime - a.mtime);
+        for (let i = 1; i < dirs.length; i++) {
+          const sz = _dirSize(dirs[i].path);
+          if (_safeRmDir(dirs[i].path)) { deleted++; freedBytes += sz; }
+        }
+      }
+    } else if (mode === "old-ls") {
+      // 特殊模式: 清理旧版Codeium Language Server二进制
+      // ~/.codeium/windsurf/ 下有纯数字版本号子目录 (如 1.20.9)
+      // 保留最新2个版本，删除其余
+      const verDirs = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        // 版本号目录: 全数字+点 (如 "1.20.9", "1.22.0")
+        if (/^\d+\.\d+/.test(entry.name)) {
+          const sub = path.join(dir, entry.name);
+          try { verDirs.push({ name: entry.name, path: sub, mtime: fs.statSync(sub).mtimeMs }); } catch {}
+        }
+      }
+      if (verDirs.length > 2) {
+        verDirs.sort((a, b) => b.mtime - a.mtime);
+        for (let i = 2; i < verDirs.length; i++) {
+          const sz = _dirSize(verDirs[i].path);
+          if (_safeRmDir(verDirs[i].path)) { deleted++; freedBytes += sz; }
+        }
+      }
+    } else if (mode === "subdirs") {
       // 删除过期子目录 (CachedData / workspaceStorage)
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
