@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 无感号池引擎 v1.0.0
  *
  * 道: 用户是号池，不是单个账号。切换必须在rate limit之前发生。
@@ -28,6 +28,7 @@ const os = require("os");
 const http = require("http");
 const { execSync } = require("child_process");
 const { runClean: _diskClean, setLogger: _diskSetLogger } = require("./diskCleaner");
+const { init: _sgInit, isDegraded: _sgDegraded } = require("./selfGuard");
 
 // ═══ 号池状态 ═══
 let statusBar, am, auth, _panelProvider, _panel;
@@ -1137,6 +1138,7 @@ function activate(context) {
 }
 
 function _activate(context) {
+  _sgInit(context); // 道之守护: 四重防线先行，最早激活
   // ═══ 结构化日志通道 (v6.2 P1: 用户可见) ═══
   _outputChannel = vscode.window.createOutputChannel("WAM 号池引擎");
   context.subscriptions.push(_outputChannel);

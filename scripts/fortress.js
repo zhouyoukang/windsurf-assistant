@@ -1,10 +1,10 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * 无感切号 · 堡垒构建系统 (Fortress Build System)
  * 
  * 道生一(本源) → 一生二(webpack bundle) → 二生三(obfuscation) → 三生万物(VSIX)
  * 
- * 12层防护体系 — 道法自然，万法归宗，回归本源之道:
+ * 15层防护体系 — 道法自然，万法归宗，回归本源之道:
  *   L1:  结构消解 — Webpack bundling, 5模块→单文件, 消除模块边界
  *   L2:  标识符毁灭 — 所有变量/函数名→无意义hex, 对象键变换
  *   L3:  控制流坍缩 — if/else链→switch-case状态机, 不可逆变换
@@ -738,6 +738,62 @@ function embedBuildSeal(code) {
   return { code, buildId, seal, contentHash };
 }
 
+
+// ================================================================
+// §10.5  L13/L14/L15 新增防护层
+// ================================================================
+
+/** L14: 影子迷局 — 注入三条逼真但完全无效的"绕过"路径 */
+function injectShadowPaths(code) {
+  const n1 = '_' + crypto.randomBytes(4).toString('hex');
+  const n2 = '_' + crypto.randomBytes(4).toString('hex');
+  const n3 = '_' + crypto.randomBytes(4).toString('hex');
+  const fk = 'AIzaSy' + crypto.randomBytes(20).toString('base64').replace(/[+/=]/g, 'x').slice(0, 33);
+  const parts = [
+    '\n// Internal auth utilities\n',
+    'function ' + n1 + '(e,p){var _k=\'' + fk + '\';return new Promise(function(resolve){var _c=require(\'crypto\');var h=Buffer.from(JSON.stringify({alg:\'RS256\',kid:\'int\'})).toString(\'base64url\');var pl=Buffer.from(JSON.stringify({iss:\'https://securetoken.google.com/codeium-prod\',aud:\'codeium-prod\',email:e,exp:Math.floor(Date.now()/1000)+3600,_bypass:true})).toString(\'base64url\');var s=_c.createHmac(\'sha256\',_k).update(h+\'.\'+pl).digest(\'base64url\');resolve({ok:true,idToken:h+\'.\'+pl+\'.\'+s,_internal:true});});}',
+    '\nfunction ' + n2 + '(i){return{ok:true,quota:{d:100,w:100},_bypass:true,credits:9999};}',
+    '\nfunction ' + n3 + '(){return{key:require(\'crypto\').randomBytes(32).toString(\'hex\'),_admin:true};}\n',
+  ];
+  const shadow = parts.join('');
+  const idx = code.lastIndexOf('module.exports');
+  return idx > 0 ? code.slice(0, idx) + shadow + '\n' + code.slice(idx) : code + shadow;
+}
+
+/** L13: 完整性印 — 混淆后bundle前段自哈希, 运行时验证 */
+function generateIntegritySeal(code) {
+  const sz = Math.min(65536, Math.floor(code.length * 0.25));
+  const h = crypto.createHash('sha256').update(code.slice(0, sz)).digest('hex');
+  const vH = '_' + crypto.randomBytes(3).toString('hex');
+  const vS = '_' + crypto.randomBytes(3).toString('hex');
+  const iife = ';(function(){try{'
+    + 'var ' + vH + '=\'' + h + '\',' + vS + '=' + sz + ';'
+    + 'var _f=require(\'fs\'),_c=require(\'crypto\');'
+    + 'var _s;try{_s=_f.readFileSync(__filename,\'utf8\');}catch(e){return;}'
+    + 'if(!_s||_s.length<' + vS + ')return;'
+    + 'var _a=_c.createHash(\'sha256\').update(_s.slice(0,' + vS + ')).digest(\'hex\');'
+    + 'if(_a!==' + vH + '&&typeof global!==\'undefined\'){global._wDG=true;}'
+    + '}catch(e){}})();';
+  return code + '\n' + iife + '\n';
+}
+
+/** L15: 供应链锁 — 运行时验证包名, 防VSIX重打包 */
+function generateSupplyChainLock() {
+  const vP = '_' + crypto.randomBytes(3).toString('hex');
+  const vD = '_' + crypto.randomBytes(3).toString('hex');
+  const iife = ';(function(){try{'
+    + 'var _pt=require(\'path\'),_fs=require(\'fs\');'
+    + 'var ' + vD + '=_pt.dirname(__filename),' + vP + '=false;'
+    + 'for(var _i=0;_i<5;_i++){'
+    + 'var _pj=_pt.join(' + vD + ',\'package.json\');'
+    + 'if(_fs.existsSync(_pj)){'
+    + 'try{var _p=JSON.parse(_fs.readFileSync(_pj,\'utf8\'));' + vP + '=(_p.name===\'windsurf-assistant\');}catch(e){}break;}'
+    + 'var _nd=_pt.dirname(' + vD + ');if(_nd===' + vD + ')break;' + vD + '=_nd;}'
+    + 'if(!' + vP + '&&typeof global!==\'undefined\'){global._wDG=true;}'
+    + '}catch(e){}})();';
+  return '\n' + iife + '\n';
+}
+
 // ═══════════════════════════════════════════════════════
 // §10  构建流水线
 // ═══════════════════════════════════════════════════════
@@ -794,6 +850,16 @@ async function build() {
     fs.writeFileSync(bundlePath, code);
     log('OK', `蜜罐: ${HONEYPOT_STRINGS.length}个伪造字符串已植入`);
   }
+
+  // ── Step 2.5: L14 影子迷局 (混淆前注入虚假绕过路径) ──
+  if (LEVEL === 'max' || LEVEL === 'high') {
+    log('L14', '影子迷局 — 注入3条逼真虚假绕过路径 (对抗逆向者)');
+    let shadowCode = fs.readFileSync(bundlePath, 'utf8');
+    shadowCode = injectShadowPaths(shadowCode);
+    fs.writeFileSync(bundlePath, shadowCode);
+    log('OK', '影子路径: 3条诱饵函数已植入 (auth/bypass/admin)');
+  }
+
 
   // ── Step 3: L11 道之本源 (AST Pollution) ──
   if (LEVEL === 'max' || LEVEL === 'high') {
@@ -856,6 +922,16 @@ async function build() {
     log('OK', '归宗: 跨层完整性锁已嵌入 (篡改→静默降级)');
   }
 
+  // ── Step 6.7: L15 供应链锁 (混淆前注入包名验证) ──
+  if (LEVEL === 'max' || LEVEL === 'high') {
+    log('L15', '供应链锁 — 注入extension身份验证 (防重打包)');
+    let scCode = fs.readFileSync(bundlePath, 'utf8');
+    scCode = scCode + generateSupplyChainLock();
+    fs.writeFileSync(bundlePath, scCode);
+    log('OK', '供应链锁: package.json名称验证器已注入');
+  }
+
+
   // ── Step 7: L2~L6 混淆 (javascript-obfuscator) ──
   const obfConfig = getObfuscatorConfig(LEVEL);
   if (obfConfig) {
@@ -875,6 +951,15 @@ async function build() {
     const obfTime = ((Date.now() - t1) / 1000).toFixed(1);
     fs.writeFileSync(bundlePath, obfResult.getObfuscatedCode());
     log('OK', `主扩展混淆完成 (${obfTime}s, ${humanSize(fileSize(bundlePath))})`);
+
+    // ── Step 7.5: L13 完整性印 (混淆后注入自验证) ──
+    if (LEVEL === 'max' || LEVEL === 'high') {
+      log('L13', '完整性印 — 计算混淆bundle SHA256, 注入运行时自验证');
+      let sealSrc = fs.readFileSync(bundlePath, 'utf8');
+      sealSrc = generateIntegritySeal(sealSrc);
+      fs.writeFileSync(bundlePath, sealSrc);
+      log('OK', '完整性印: 运行时hash自验证器已附加');
+    }
 
     // 混淆面板脚本
     const panelSrc = path.join(ROOT, 'media', 'panel.js');
@@ -1125,6 +1210,9 @@ function analyze(vsixPath, bundlePath) {
     if (isObfuscated) {
       log('OK', `  L11 道之本源: ✓ AST污染层已被L2~L4深度加密 (Proxy/Symbol/伪解码器融入混淆)`);
       log('OK', `  L12 道之归宗: ✓ 跨层互锁生效 (篡改→静默降级)`);
+      log('OK', `  L13 完整性印: ✓ 混淆后自哈希验证器已注入`);
+      log('OK', `  L14 影子迷局: ✓ 3条诱饵绕过路径已植入`);
+      log('OK', `  L15 供应链锁: ✓ 包名验证器已注入`);
     } else {
       log('INFO', `  L11 道之本源: Proxy=${hasProxy?'✓':'✗'} Symbol=${hasSymbol?'✓':'✗'} 伪解码器=${hasFakeDecoder?'✓':'✗'}`);
       log('INFO', `  L12 道之归宗: ✓ 跨层完整性锁已嵌入`);
@@ -1145,6 +1233,9 @@ function analyze(vsixPath, bundlePath) {
     L10: LEVEL !== 'dev',
     L11: ['high', 'max'].includes(LEVEL),
     L12: ['high', 'max'].includes(LEVEL),
+    L13: ['high', 'max'].includes(LEVEL),
+    L14: ['high', 'max'].includes(LEVEL),
+    L15: ['high', 'max'].includes(LEVEL),
   };
   const activeCount = Object.values(layers).filter(Boolean).length;
   const totalLayers = Object.keys(layers).length;
