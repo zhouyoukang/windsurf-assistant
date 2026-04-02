@@ -16,6 +16,8 @@ __pycache__/
 _ext_backups/
 _windsurf_backups/
 _wam_snapshots.json
+_doctor_backups/
+_archive/
 
 # Debug data
 _email_debug_*.json
@@ -24,11 +26,25 @@ _gmail_alias_results.json
 _gmail_alias_state.json
 _active_account.txt
 _optimal_key.txt
+_live_apikey.txt
+_session_plaintext.json
+_auth_deep_extract.json
+_multi_user_diag_report.json
+_reverse_workbench_results.json
+_continue_reverse.json
+_dpapi_decrypted.json
+_doctor_reference.json
+_179_used_accounts.json
 
 # Temp
 *.bak
 raw_frames.json
 stream_frames.json
+sonnet46_result.txt
+cascade_response.txt
+
+# Images (screenshots)
+*.png
 
 # Secrets
 secrets.env

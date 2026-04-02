@@ -15,7 +15,7 @@
 windsurf-assistant/
 ├── dist/                     # VSIX 扩展打包产物
 │   └── extension.js          # Windsurf Login Helper v9.0.0 核心
-├── engine/                   # 010-道引擎 (WAM Engine)
+├── engine/                   # 010-道引擎 (WAM Engine) — 23 files
 │   ├── wam_engine.py         # 无感账号管理引擎 (主控)
 │   ├── dao_engine.py         # 道引擎：认证链+积分+轮转
 │   ├── pool_engine.py        # 号池引擎：多账号调度
@@ -26,63 +26,54 @@ windsurf-assistant/
 │   ├── patch_continue_bypass.py  # P1-P4: maxGen+AutoContinue
 │   ├── patch_rate_limit_bypass.py # P6-P8: Fail-Open+UI解锁
 │   ├── telemetry_reset.py    # 设备指纹重置→新Trial
-│   ├── upgrade_v9.2.py       # v9.2 升级脚本
 │   ├── wam_dashboard.html    # WAM 管理面板
-│   ├── HOT_LAUNCH.ps1        # 热启动脚本
-│   ├── _cross_user_bridge.py # 跨用户桥接
-│   └── _safety_check.py      # 安全检查
-├── pipeline/                 # 020-注册管线
+│   └── _*                    # 测试+探针+安全检查
+├── pipeline/                 # 020-注册管线 — 11 files
 │   ├── _pipeline_v3.py       # 注册管线 v3 (最新)
-│   ├── _pipeline_v2.py       # 注册管线 v2
-│   ├── _register_one.py      # 单账号注册
 │   ├── _gmail_alias_engine.py # Gmail+alias 引擎
 │   ├── _universal_engine.py  # 通用注册引擎
 │   ├── _yahoo_auto.py        # Yahoo 自动注册
-│   ├── _zero_cost_engine.py  # 零成本引擎
 │   └── turnstilePatch/       # Cloudflare Turnstile 绕过
-│       ├── manifest.json
-│       ├── inject.js
-│       └── background.js
-├── cloud-pool/               # 030-云端号池
+├── cloud-pool/               # 030-云端号池 — 21 files
 │   ├── cloud_pool_server.py  # 云端号池服务 v3.1
 │   ├── cloud_pool.html       # 管理面板
 │   ├── public.html           # 公共查询页
 │   ├── redeem.html           # 卡密兑换页
-│   ├── sync_local_to_cloud.py # 本地→云端同步
-│   └── deploy_v311.ps1       # 部署脚本
-├── tools/                    # 工具集
+│   ├── _ldxp_codes_*.txt     # 卡密批次
+│   └── _test_*.py            # E2E 测试
+├── diagnostics/              # 040-诊断工具 — 132 files ⚡ NEW
+│   ├── windsurf_doctor.py    # 全能诊断器 (51KB)
+│   ├── credit_toolkit.py     # 积分工具箱 (38KB)
+│   ├── _rate_limit_guardian.py  # 限流守护 (29KB)
+│   ├── _opus46_breakthrough.py  # Opus46突破 (24KB)
+│   ├── _inject_179_live.py   # 179注入 (124KB)
+│   ├── _deep_reverse_v9.py   # 深度逆向 v9
+│   ├── _watchdog_wuwei.js    # 无为守护 (19KB)
+│   ├── _wuwei_daemon.py      # 无为后台
+│   ├── _fix_*.py / _fix_*.ps1 # 修复工具集
+│   ├── _inject_*.py          # 注入工具集
+│   └── _diag_*.py / _probe_*.py # 诊断+探针
+├── research/                 # 研究脚本 — 170 files ⚡ NEW
+│   ├── opus46_ultimate.py    # Opus46终极方案 (34KB)
+│   ├── opus46_终局突破.py     # 终局突破 (32KB)
+│   ├── ws_backend.py         # WS后端逆向 (30KB)
+│   ├── cascade_*.py          # Cascade协议研究
+│   ├── find_*.py             # 特征搜索工具
+│   ├── crack*.py             # 协议破解
+│   ├── grpc*.py              # gRPC/Protobuf 逆向
+│   └── proto_*.py            # Protobuf 解析
+├── tools/                    # 工具集 — 14 files
 │   ├── credit_toolkit.py     # 积分监控/委派/Dashboard
 │   ├── ws_repatch.py         # 补丁系统 v4.0 (全静默)
-│   ├── _model_matrix.py      # 模型积分矩阵提取
-│   ├── _decode_models.py     # Protobuf 模型解码
-│   ├── _health_check.py      # 系统健康检查
-│   ├── check_plan_status.py  # 计划状态检查
-│   ├── exchange_token.py     # Token 交换
-│   ├── key_daemon.py         # 密钥守护进程
-│   ├── hub_api.py            # Hub API 客户端
-│   ├── quick_switch.js       # 快速切换脚本
 │   ├── windsurf-multi.ps1    # 多实例管理
 │   └── _complete_model_matrix.json # 102模型完整矩阵
 ├── scripts/                  # 一键脚本
 │   ├── →一键万法.cmd          # 统一入口
-│   ├── →无感启动.cmd          # 无感启动
-│   ├── →WAM部署.cmd           # WAM部署
-│   ├── →一键换号.cmd          # 一键切号
-│   ├── →积分工具箱.cmd        # 积分工具
-│   ├── →立即注册新账号.cmd    # 注册新号
-│   ├── →重打补丁.cmd          # 重新Patch
-│   ├── →注册自启动.ps1        # 开机自启
 │   └── 一键万法.py            # Python入口
 ├── docs/                     # 文档
 │   ├── DEEP_CREDIT_MECHANISM_v8.md  # 六层计费架构逆向 (主文档)
-│   ├── ACCOUNT_ROOT_SOURCE.md       # 账号体系根源分析
-│   ├── QUOTA_SYSTEM_v10.md          # 配额系统 v10
-│   ├── RATE_LIMIT_ESSENCE.md        # 限流本质分析
-│   ├── RATE_LIMIT_ROOT_CAUSE_v10.md # 限流根因 v10
-│   ├── FULL_CHAIN_ANALYSIS_v2.md    # 全链路分析 v2
-│   └── VCARD_BREAKTHROUGH_v1.md     # VCard 突破
-├── media/
-│   └── icon.svg              # 扩展图标
+│   └── ...                   # 限流根因 / 配额系统 / 全链路分析
+├── media/icon.svg            # 扩展图标
 ├── package.json              # VSIX 扩展清单
 ├── .vsixmanifest             # VSIX 包描述
 └── LICENSE                   # MIT
