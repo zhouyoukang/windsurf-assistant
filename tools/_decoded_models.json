@@ -1,0 +1,173 @@
+{
+  "commandModels": [
+    {
+      "index": 0,
+      "fields": {
+        "1": [
+          "Claude 4.5 Opus"
+        ],
+        "2": [
+          "{1: [391]}"
+        ],
+        "10": [
+          "3"
+        ],
+        "12": [
+          "<10B>"
+        ],
+        "22": [
+          "MODEL_CLAUDE_4_5_OPUS"
+        ]
+      },
+      "name_guess": "Claude 4.5 Opus"
+    },
+    {
+      "index": 1,
+      "fields": {
+        "1": [
+          "SWE-1.5"
+        ],
+        "2": [
+          "{1: [359]}"
+        ],
+        "10": [
+          "1"
+        ],
+        "12": [
+          "<10B>"
+        ],
+        "22": [
+          "MODEL_SWE_1_5"
+        ]
+      },
+      "name_guess": "SWE-1.5"
+    },
+    {
+      "index": 2,
+      "fields": {
+        "1": [
+          "Windsurf Fast"
+        ],
+        "2": [
+          "{1: [58]}"
+        ],
+        "10": [
+          "1"
+        ],
+        "12": [
+          "<12B>"
+        ],
+        "22": [
+          "MODEL_CHAT_11121"
+        ]
+      },
+      "name_guess": "Windsurf Fast"
+    },
+    {
+      "index": 3,
+      "fields": {
+        "1": [
+          "GPT-4.1"
+        ],
+        "2": [
+          "{1: [259]}"
+        ],
+        "10": [
+          "2"
+        ],
+        "12": [
+          "<10B>"
+        ],
+        "22": [
+          "MODEL_CHAT_GPT_4_1_2025_04_14"
+        ]
+      },
+      "name_guess": "GPT-4.1"
+    },
+    {
+      "index": 4,
+      "fields": {
+        "1": [
+          "Claude 4 Sonnet"
+        ],
+        "2": [
+          "{1: [281]}"
+        ],
+        "10": [
+          "3"
+        ],
+        "12": [
+          "<10B>"
+        ],
+        "22": [
+          "MODEL_CLAUDE_4_SONNET"
+        ]
+      },
+      "name_guess": "Claude 4 Sonnet"
+    },
+    {
+      "index": 5,
+      "fields": {
+        "1": [
+          "Claude 4.5 Sonnet"
+        ],
+        "2": [
+          "{1: [220]}"
+        ],
+        "10": [
+          "3"
+        ],
+        "12": [
+          "<10B>"
+        ],
+        "22": [
+          "MODEL_PRIVATE_2"
+        ]
+      },
+      "name_guess": "Claude 4.5 Sonnet"
+    },
+    {
+      "index": 6,
+      "fields": {
+        "1": [
+          "GPT 5.1"
+        ],
+        "2": [
+          "{1: [348]}"
+        ],
+        "10": [
+          "2"
+        ],
+        "12": [
+          "<10B>"
+        ],
+        "22": [
+          "MODEL_PRIVATE_12"
+        ]
+      },
+      "name_guess": "GPT 5.1"
+    },
+    {
+      "index": 7,
+      "fields": {
+        "1": [
+          "Claude Haiku 4.5"
+        ],
+        "2": [
+          "{1: [347]}"
+        ],
+        "10": [
+          "3"
+        ],
+        "12": [
+          "<10B>"
+        ],
+        "22": [
+          "MODEL_PRIVATE_11"
+        ]
+      },
+      "name_guess": "Claude Haiku 4.5"
+    }
+  ],
+  "totalModels": 102
+}

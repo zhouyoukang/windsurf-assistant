@@ -1,0 +1,23 @@
+{
+  "manifest_version": 2,
+  "name": "TurnstilePatch",
+  "version": "1.0",
+  "description": "Cloudflare Turnstile auto-solver for DrissionPage automation",
+  "permissions": [
+    "tabs",
+    "webNavigation",
+    "*://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  }
+}

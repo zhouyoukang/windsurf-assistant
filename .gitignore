@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+*.stdout.log
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Backups & Snapshots
+_ext_backups/
+_windsurf_backups/
+_wam_snapshots.json
+
+# Debug data
+_email_debug_*.json
+_register_results.json
+_gmail_alias_results.json
+_gmail_alias_state.json
+_active_account.txt
+_optimal_key.txt
+
+# Temp
+*.bak
+raw_frames.json
+stream_frames.json
+
+# Secrets
+secrets.env
