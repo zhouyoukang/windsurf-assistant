@@ -78,3 +78,17 @@ secrets.env
 
 # Node
 node_modules/
+
+# Removed directories (development-only, not for users)
+diagnostics/
+research/
+engine/
+dist/
+pool-admin/
+cloud-pool/
+pipeline/
+scripts/
+tools/
+media/
+.vsixmanifest
+LOCAL_MAPPING.md
