@@ -1,4 +1,4 @@
-// WAM v10.0 — 道法自然: 多源竞速·官方直连·缓存降级·系统DNS·冷启动修复
+// WAM v10.0.2 — 道法自然: 多源竞速·官方直连·缓存降级·系统DNS·冷启动修复·系统代理自检
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
 // 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
 const vscode = require("vscode");
@@ -19,7 +19,9 @@ const FIREBASE_KEYS = [
 ];
 const FIREBASE_HOST = "identitytoolkit.googleapis.com";
 const PROXY_HOST = "127.0.0.1";
-const PROXY_PORTS = [7890, 7897, 7891, 10808, 1080];
+const PROXY_PORTS = [
+  7890, 7897, 7891, 10808, 10809, 20808, 20809, 1080, 1081, 8118, 8889, 2080,
+];
 const WAM_DIR = path.join(os.homedir(), ".wam-hot");
 const TOKEN_FILE = path.join(WAM_DIR, "oneshot_token.json");
 const RESULT_FILE = path.join(WAM_DIR, "inject_result.json");
@@ -1294,6 +1296,46 @@ function _httpsViaProxy(
   });
 }
 
+// ── 从系统代理/环境变量提取额外端口 ──
+function _getSystemProxyPorts() {
+  const extra = new Set();
+  try {
+    const envKeys = [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "ALL_PROXY",
+      "all_proxy",
+    ];
+    for (const k of envKeys) {
+      const v = process.env[k];
+      if (v) {
+        const m = v.match(/:(\d+)/);
+        if (m) extra.add(parseInt(m[1]));
+      }
+    }
+  } catch {}
+  if (process.platform === "win32") {
+    try {
+      const { execSync } = require("child_process");
+      const reg = execSync(
+        'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer 2>nul',
+        { timeout: 2000, encoding: "utf8" },
+      );
+      const m = reg.match(/ProxyServer\s+REG_SZ\s+(.+)/i);
+      if (m) {
+        const parts = m[1].trim().split(";");
+        for (const p of parts) {
+          const pm = p.match(/:(\d+)/);
+          if (pm) extra.add(parseInt(pm[1]));
+        }
+      }
+    } catch {}
+  }
+  return [...extra].filter((p) => p > 0 && p < 65536);
+}
+
 // ── 探测本地代理端口 ──
 let _proxyPortCache = null;
 let _proxyPortCacheTs = 0;
@@ -1305,10 +1347,16 @@ function _detectProxy() {
   )
     return Promise.resolve(_proxyPortCache);
   _proxyPortCache = null;
+  const sysPorts = _getSystemProxyPorts();
+  const allPorts = [...new Set([...PROXY_PORTS, ...sysPorts])];
   return new Promise((resolve) => {
     let found = false;
-    let pending = PROXY_PORTS.length;
-    for (const port of PROXY_PORTS) {
+    let pending = allPorts.length;
+    if (pending === 0) {
+      resolve(0);
+      return;
+    }
+    for (const port of allPorts) {
       const s = new net.Socket();
       s.setTimeout(800);
       s.connect(port, PROXY_HOST, () => {
@@ -1317,6 +1365,8 @@ function _detectProxy() {
           found = true;
           _proxyPortCache = port;
           _proxyPortCacheTs = Date.now();
+          if (sysPorts.includes(port))
+            log(`proxy: system-detected port ${port}`);
           resolve(port);
         }
       });
@@ -3242,7 +3292,7 @@ function updateStatusBar() {
   if (_mode === "official") {
     _statusBarItem.text = "$(key) 官方模式";
     _statusBarItem.tooltip =
-      "WAM v10.0 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
+      "WAM v10.0.2 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
     return;
   }
   const s = _store.getPoolStats();
@@ -3259,7 +3309,7 @@ function updateStatusBar() {
     const monTag = _monitorActive ? "$(sync~spin)" : "$(zap)";
     _statusBarItem.text = `${monTag}${droughtTag} D${liveD}%·W${liveW}% ${s.available}/${s.pwCount}号${inUseTag}${waitTag}`;
     _statusBarItem.tooltip =
-      `WAM v10.0 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
+      `WAM v10.0.2 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
       `活跃: ${activeAcc.email}\n${h.plan}\n` +
       `号池: ${s.available}可用 · ${s.exhausted}耗尽 · ${s.waiting}等重置\n` +
       (s.drought
@@ -3270,7 +3320,7 @@ function updateStatusBar() {
       `监测: ${_totalMonitorCycles}轮 · ${_totalChangesDetected}次变动`;
   } else {
     _statusBarItem.text = `$(zap) ${s.pwCount}号`;
-    _statusBarItem.tooltip = `WAM v10.0 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
+    _statusBarItem.tooltip = `WAM v10.0.2 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
   }
 }
 
@@ -4082,7 +4132,7 @@ function startFileWatcher() {
 // ============================================================
 function activate(context) {
   log(
-    `activate v9.1.0-五感模式 — inst=${_instanceId} 纯热替换·绝不logout·绝不杀agent·Token预热·Rate-limit拦截`,
+    `activate v10.0.2-五感模式 — inst=${_instanceId} 纯热替换·绝不logout·绝不杀agent·Token预热·Rate-limit拦截·系统代理自检`,
   );
 
   const gsPath =
@@ -4376,7 +4426,7 @@ function activate(context) {
       const inUseEmails = [..._store._inUse.keys()]
         .map((e) => e.substring(0, 15))
         .join(", ");
-      let msg = `WAM v10.0.0 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
+      let msg = `WAM v10.0.2 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
       if (activeAcc) msg += ` | 活跃: ${activeAcc.email.substring(0, 20)}`;
       if (_store._inUse.size > 0) msg += ` | 使用中: ${inUseEmails}`;
       vscode.window.showInformationMessage(msg);
