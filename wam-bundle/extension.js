@@ -1,5 +1,6 @@
-// WAM v8.0 — 道法自然: 无感热替换·不中断对话·Token预热·Rate-limit拦截
-// 道冲，而用之或不盈。渊兮，似万物之宗。
+// WAM v9.1 — 五感模式: 纯热替换·绝不logout·绝不杀agent·Token预热·Rate-limit拦截
+// 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
+// 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
 const vscode = require('vscode');
 const crypto = require('crypto');
 const https = require('https');
@@ -1517,27 +1518,26 @@ function _updateAccountUsage(email, quota) {
   };
 }
 
-// ── Token注入 (v8.0 — 道法自然: 无感热替换·不中断对话·不登出旧会话) ──
-// 根因修复: v7.3的pre-logout会终止活跃对话, 是"切号中断对话"的唯一根源
+// ── Token注入 (v9.1 — 五感模式: 纯热替换·绝不logout·绝不中断对话·绝不杀agent) ──
+// 根因修复: v8.0的Phase2 degraded path调用windsurf.logout是"切号退出登录+agent中断"的唯一根源
 // 道法自然: provideAuthTokenToAuthProvider本身就是原子替换, 无需先登出
-// 仅在连续注入失败后, 作为最后手段才尝试logout+retry (降级路径)
+// 五感原则: 失败则优雅降级, 绝不破坏现有会话 — 保持当前号继续运行远比强行切号重要
 async function injectAuth(idToken) {
   const cmd = 'windsurf.provideAuthTokenToAuthProvider';
-  const FAST_TIMEOUT = 15000;   // v8: 首次尝试15s超时 (够了, 45s太长)
-  const RETRY_TIMEOUT = 20000;  // v8: 重试20s超时
-  const FAST_BACKOFF = 500;     // v8: 500ms快速退避 (替代1.5s指数退避)
+  const TIMEOUTS = [15000, 15000, 20000, 25000]; // 4次尝试, 逐步放宽超时
+  const BACKOFFS = [0, 500, 1500, 3000];          // 退避递增: 0→0.5→1.5→3s
 
-  // ── Phase 1: 直接热替换 (不logout, 不中断对话) — 2次快速尝试 ──
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
     try {
-      if (attempt > 1) {
-        log(`inject: fast-retry ${FAST_BACKOFF}ms before attempt ${attempt}`);
-        await new Promise(r => setTimeout(r, FAST_BACKOFF));
+      if (BACKOFFS[attempt - 1] > 0) {
+        log(`inject: backoff ${BACKOFFS[attempt - 1]}ms before attempt ${attempt}`);
+        await new Promise(r => setTimeout(r, BACKOFFS[attempt - 1]));
       }
-      log(`inject: hot-swap attempt ${attempt}/2 (no logout)`);
+      log(`inject: hot-swap attempt ${attempt}/4 (no-logout·五感模式)`);
+      const timeout = TIMEOUTS[attempt - 1];
       const result = await Promise.race([
         vscode.commands.executeCommand(cmd, idToken),
-        new Promise((_, rej) => setTimeout(() => rej(new Error(`注入超时${FAST_TIMEOUT/1000}s`)), FAST_TIMEOUT)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`注入超时${timeout/1000}s`)), timeout)),
       ]);
       const extracted = _extractInjectResult(result);
       if (extracted) {
@@ -1554,43 +1554,9 @@ async function injectAuth(idToken) {
       log(`inject: attempt ${attempt} threw: ${e.message}`);
     }
   }
-
-  // ── Phase 2: 降级路径 — logout后重试 (仅对话已结束或用户手动切号时到达此处) ──
-  log('inject: hot-swap failed, degraded path: logout + retry');
-  try {
-    await Promise.race([
-      vscode.commands.executeCommand('windsurf.logout'),
-      new Promise(r => setTimeout(r, 4000)),
-    ]);
-    await new Promise(r => setTimeout(r, 200));
-  } catch (e) {
-    log(`inject: degraded-logout skipped: ${e.message}`);
-  }
-
-  for (let attempt = 3; attempt <= 4; attempt++) {
-    try {
-      if (attempt > 3) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
-      log(`inject: degraded attempt ${attempt}/4`);
-      const result = await Promise.race([
-        vscode.commands.executeCommand(cmd, idToken),
-        new Promise((_, rej) => setTimeout(() => rej(new Error(`注入超时${RETRY_TIMEOUT/1000}s`)), RETRY_TIMEOUT)),
-      ]);
-      const extracted = _extractInjectResult(result);
-      if (extracted) {
-        log(`inject: degraded OK on attempt ${attempt}`);
-        _lastSwitchTime = Date.now();
-        return extracted;
-      }
-      if (result && result.error) {
-        log(`inject: degraded ${attempt} error: ${JSON.stringify(result.error)}`);
-      }
-    } catch (e) {
-      log(`inject: degraded ${attempt} threw: ${e.message}`);
-    }
-  }
-  return { ok: false, error: 'all 4 inject attempts failed (2 hot-swap + 2 degraded)' };
+  // 五感模式: 4次全败也绝不logout — 保持现有会话不受干扰, agent继续运行
+  log('inject: all 4 hot-swap attempts failed — 五感模式: 保持现有会话, 不logout, 不中断agent');
+  return { ok: false, error: 'all 4 inject attempts failed (五感模式: 已保留现有会话)' };
 }
 
 // 提取注入结果的通用辅助 (避免重复代码)
@@ -2978,7 +2944,7 @@ function startFileWatcher() {
 // 激活 — v6.0 · 实时额度监测 · 重置感知 · 反者道之动
 // ============================================================
 function activate(context) {
-  log(`activate v8.0.0-道法自然 — inst=${_instanceId} 无感热替换·Token预热·Rate-limit拦截·不中断对话`);
+  log(`activate v9.1.0-五感模式 — inst=${_instanceId} 纯热替换·绝不logout·绝不杀agent·Token预热·Rate-limit拦截`);
 
   const gsPath = context.globalStorageUri?.fsPath ||
     path.join(os.homedir(), 'AppData', 'Roaming', 'Windsurf', 'User', 'globalStorage');
