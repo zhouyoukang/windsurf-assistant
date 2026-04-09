@@ -40,5 +40,6 @@ tools/
 .vsixmanifest
 LOCAL_MAPPING.md
 
-# Allow wam-bundle media (icon needed)
+# Allow wam-bundle media (icon needed) & VSIX (distributable)
 !wam-bundle/media/
+!wam-bundle/*.vsix
