@@ -1,4 +1,4 @@
-﻿// WAM v10.1.0 — 道法自然: 单key精简·登录限流·quota冷却·指数退避·代理快恢·CONNECT验证·agent隔离·四层代理·多源竞速·官方直连·缓存降级
+// WAM v10.0.4 — 道法自然: 单key精简·登录限流·quota冷却·指数退避·代理快恢·CONNECT验证·agent隔离·四层代理·多源竞速·官方直连·缓存降级
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
 // 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
 const vscode = require("vscode");
@@ -943,8 +943,8 @@ class AccountStore {
       unchecked = 0;
     const drought = isWeeklyDrought();
     for (const a of this.accounts) {
-      pwCount++;
       if (!a.password) continue;
+      pwCount++;
       const h = this.getHealth(a);
       if (!h.checked) {
         unchecked++;
@@ -2130,6 +2130,7 @@ async function _resolveHostIP(hostname) {
             servername: doh.host,
             rejectUnauthorized: false,
             timeout: 5000,
+            agent: false, // v10.0.4: 绕过全局proxy agent
           },
           (resp) => {
             let d = "";
@@ -2181,6 +2182,7 @@ async function _resolveHostIP(hostname) {
           method: "CONNECT",
           path: "dns.google:443",
           timeout: 5000,
+          agent: false, // v10.0.4: 绕过全局proxy agent
         });
         connReq.on("connect", (res, socket) => {
           if (res.statusCode !== 200) {
@@ -2199,6 +2201,7 @@ async function _resolveHostIP(hostname) {
               servername: "dns.google",
               rejectUnauthorized: false,
               timeout: 6000,
+              agent: false, // v10.0.4: 绕过全局proxy agent
             },
             (resp) => {
               let d = "";
@@ -3546,7 +3549,7 @@ function updateStatusBar() {
   if (_mode === "official") {
     _statusBarItem.text = "$(key) 官方模式";
     _statusBarItem.tooltip =
-      "WAM v10.0.3 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
+      "WAM v10.0.4 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
     return;
   }
   const s = _store.getPoolStats();
@@ -3563,7 +3566,7 @@ function updateStatusBar() {
     const monTag = _monitorActive ? "$(sync~spin)" : "$(zap)";
     _statusBarItem.text = `${monTag}${droughtTag} D${liveD}%·W${liveW}% ${s.available}/${s.pwCount}号${inUseTag}${waitTag}`;
     _statusBarItem.tooltip =
-      `WAM v10.0.3 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
+      `WAM v10.0.4 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
       `活跃: ${activeAcc.email}\n${h.plan}\n` +
       `号池: ${s.available}可用 · ${s.exhausted}耗尽 · ${s.waiting}等重置\n` +
       (s.drought
@@ -3574,7 +3577,7 @@ function updateStatusBar() {
       `监测: ${_totalMonitorCycles}轮 · ${_totalChangesDetected}次变动`;
   } else {
     _statusBarItem.text = `$(zap) ${s.pwCount}号`;
-    _statusBarItem.tooltip = `WAM v10.0.3 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
+    _statusBarItem.tooltip = `WAM v10.0.4 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
   }
 }
 
@@ -4386,7 +4389,7 @@ function startFileWatcher() {
 // ============================================================
 function activate(context) {
   log(
-    `activate v10.1.1-五感模式 — inst=${_instanceId} 单key·登录限流·quota冷却·失败冷却·3次注入·指数退避·代理快恢·CONNECT验证·agent隔离·纯热替换·绝不logout·绝不杀agent·Token预热`,
+    `activate v10.0.4-五感模式 — inst=${_instanceId} 单key·登录限流·quota冷却·失败冷却·3次注入·指数退避·代理快恢·CONNECT验证·agent隔离·纯热替换·绝不logout·绝不杀agent·Token预热`,
   );
 
   const gsPath =
@@ -4680,7 +4683,7 @@ function activate(context) {
       const inUseEmails = [..._store._inUse.keys()]
         .map((e) => e.substring(0, 15))
         .join(", ");
-      let msg = `WAM v10.0.3 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
+      let msg = `WAM v10.0.4 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
       if (activeAcc) msg += ` | 活跃: ${activeAcc.email.substring(0, 20)}`;
       if (_store._inUse.size > 0) msg += ` | 使用中: ${inUseEmails}`;
       vscode.window.showInformationMessage(msg);
