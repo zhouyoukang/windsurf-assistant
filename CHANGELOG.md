@@ -1,5 +1,20 @@
 # Changelog
 
+## v10.0.5 — 首选账号同步修复 (2026-04-09)
+
+### 根因
+
+Windsurf v1.108+ 的 `handleAuthToken` 函数创建新 session 但**不调用 `updateAccountPreference`**，导致 `state.vscdb` 中 `codeium.windsurf-windsurf_auth` 仍指向旧账号。Cascade agent 基于首选账号获取 apiKey，因此切号后实际仍使用旧账号的额度。
+
+### 修复
+
+- **`_syncPreferredAccount()`** — 注入成功后使用 `@vscode/sqlite3`（Windsurf 内置）直接更新 `state.vscdb` 的首选账号键
+- **双路径覆盖** — `switchToAccount` 和 `fileWatcher` 两个注入入口均在成功后调用
+- **优雅降级** — 若 `@vscode/sqlite3` 不可用则跳过，不影响现有功能
+- **五感原则进化** — 不再禁止写 `state.vscdb`，因为这是完成账号切换的必要操作
+
+---
+
 ## v10.0.4 — 审计修复5项底层bug (2026-04-09)
 
 ### 修复清单

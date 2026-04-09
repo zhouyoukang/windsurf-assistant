@@ -2,7 +2,7 @@
 
 > 上善若水。水善利万物而不争。
 
-**Windsurf Account Manager v10.0.4** — 纯热替换 · Token预热 · Rate-limit拦截 · 智能轮转 · 零中断
+**Windsurf Account Manager v10.0.5** — 纯热替换 · Token预热 · Rate-limit拦截 · 智能轮转 · 首选账号同步 · 零中断
 
 ---
 
@@ -19,6 +19,12 @@
 - **多账号管理** — 暗色主题管理面板，批量验证/清理/刷新有效期
 - **WAM/官方双模式** — 一键切换，随时回退官方登录
 
+### v10.0.5 修复
+
+- **首选账号同步** — 注入成功后自动更新 `state.vscdb` 的首选账号，解决 Windsurf v1.108+ 切号后实际不生效的根因
+- **`@vscode/sqlite3` 集成** — 使用 Windsurf 内置 SQLite 模块，零依赖
+- **双路径覆盖** — `switchToAccount` 和 `fileWatcher` 两个注入入口均同步
+
 ### v10.0.4 修复
 
 - **切号不受cooldown限制** — `switchToAccount` 调用 `firebaseLogin` 时 `force=true`，绕过全局冷却
@@ -34,11 +40,11 @@
 
 ## 源码
 
-`wam-bundle/` 目录包含完整可读源码（WAM v10.0.4）：
+`wam-bundle/` 目录包含完整可读源码（WAM v10.0.5）：
 
 ```
 wam-bundle/
-├── extension.js    # 切号引擎核心 (~4800行)
+├── extension.js    # 切号引擎核心 (~4900行)
 ├── package.json    # 扩展清单
 └── media/
     └── icon.svg    # 侧边栏图标

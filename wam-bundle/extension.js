@@ -1,6 +1,8 @@
-// WAM v10.0.4 — 道法自然: 单key精简·登录限流·quota冷却·指数退避·代理快恢·CONNECT验证·agent隔离·四层代理·多源竞速·官方直连·缓存降级
+// WAM v10.0.5 — 道法自然: 单key精简·登录限流·quota冷却·指数退避·代理快恢·CONNECT验证·agent隔离·四层代理·多源竞速·官方直连·缓存降级·preferredAccount同步
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
-// 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
+// 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host
+// v10.0.5: 道法自然 — Windsurf v1.110.1的handleAuthToken不再更新preferredAccount
+// 必须写state.vscdb的codeium.windsurf-windsurf_auth才能完成真正的账号切换
 const vscode = require("vscode");
 const crypto = require("crypto");
 const https = require("https");
@@ -1308,164 +1310,6 @@ function _httpsViaProxy(
   });
 }
 
-// ── v10.0.3: 四层代理发现引擎 — 道法自然·不依赖任何用户环境 ──
-// 层0: VSCode/Windsurf http.proxy 设置 (最可靠 — 用户能用IDE就说明这个代理通)
-// 层1: 环境变量 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
-// 层2: Windows注册表 Internet Settings ProxyServer
-// 层3: 硬编码常见端口扫描 (兜底)
-function _parseProxyUrl(raw) {
-  if (!raw) return null;
-  try {
-    const s = raw.trim();
-    // socks5://host:port, http://host:port, host:port
-    const m = s.match(
-      /(?:(?:https?|socks[45]?):\/\/)?(?:[^@]+@)?([^:\/\s]+):(\d+)/i,
-    );
-    if (m) {
-      const host = m[1] || "127.0.0.1";
-      const port = parseInt(m[2]);
-      if (port > 0 && port < 65536) return { host, port, raw: s };
-    }
-  } catch {}
-  return null;
-}
-
-function _getVSCodeProxy() {
-  try {
-    const cfg = vscode.workspace.getConfiguration("http");
-    const proxy = cfg.get("proxy");
-    if (proxy) return _parseProxyUrl(proxy);
-  } catch {}
-  return null;
-}
-
-function _getEnvProxyPorts() {
-  const result = [];
-  try {
-    const envKeys = [
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "http_proxy",
-      "https_proxy",
-      "ALL_PROXY",
-      "all_proxy",
-    ];
-    for (const k of envKeys) {
-      const v = process.env[k];
-      if (v) {
-        const p = _parseProxyUrl(v);
-        if (p) result.push(p);
-      }
-    }
-  } catch {}
-  return result;
-}
-
-function _getRegistryProxyPorts() {
-  const result = [];
-  if (process.platform !== "win32") return result;
-  try {
-    const { execSync } = require("child_process");
-    const reg = execSync(
-      'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer 2>nul',
-      { timeout: 2000, encoding: "utf8" },
-    );
-    const m = reg.match(/ProxyServer\s+REG_SZ\s+(.+)/i);
-    if (m) {
-      for (const part of m[1].trim().split(";")) {
-        const p = _parseProxyUrl(part);
-        if (p) result.push(p);
-      }
-    }
-  } catch {}
-  return result;
-}
-
-// 汇总所有代理源 — 返回优先级排序的 {host, port, source}[]
-function _collectAllProxySources() {
-  const sources = [];
-  const seen = new Set();
-  const add = (host, port, source) => {
-    const key = `${host}:${port}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    sources.push({ host, port, source });
-  };
-  // 层0: VSCode/Windsurf 代理设置 (最高优先)
-  const vsProxy = _getVSCodeProxy();
-  if (vsProxy) add(vsProxy.host, vsProxy.port, "vscode");
-  // 层1: 环境变量
-  for (const p of _getEnvProxyPorts()) add(p.host, p.port, "env");
-  // 层2: Windows注册表
-  for (const p of _getRegistryProxyPorts()) add(p.host, p.port, "registry");
-  // 层3: 硬编码端口 (全部用 127.0.0.1)
-  for (const port of PROXY_PORTS) add(PROXY_HOST, port, "builtin");
-  return sources;
-}
-
-// ── 探测本地代理端口 (v10.0.4: CONNECT握手验证 — 不再仅TCP连接, 排除SOCKS-only端口) ──
-let _proxyPortCache = null;
-let _proxyPortHostCache = PROXY_HOST;
-let _proxyPortCacheTs = 0;
-const PROXY_CACHE_TTL = 300000; // 5分钟 TTL
-function _detectProxy() {
-  if (
-    _proxyPortCache !== null &&
-    Date.now() - _proxyPortCacheTs < PROXY_CACHE_TTL
-  )
-    return Promise.resolve(_proxyPortCache);
-  _proxyPortCache = null;
-  const sources = _collectAllProxySources();
-  if (sources.length === 0) return Promise.resolve(0);
-  return new Promise((resolve) => {
-    let found = false;
-    let pending = sources.length;
-    for (const src of sources) {
-      // v10.0.4: 用HTTP CONNECT握手验证代理, 而非仅TCP连接
-      // 这样SOCKS-only端口(如20808)会被socket hang up淘汰
-      const connReq = http.request({
-        host: src.host,
-        port: src.port,
-        method: "CONNECT",
-        path: `${FIREBASE_HOST}:443`,
-        timeout: 3000,
-        agent: false, // 绕过VS Code全局代理agent
-      });
-      connReq.on("connect", (res, socket) => {
-        socket.destroy();
-        connReq.destroy();
-        if (!found && res.statusCode === 200) {
-          found = true;
-          _proxyPortCache = src.port;
-          _proxyPortHostCache = src.host;
-          _proxyPortCacheTs = Date.now();
-          log(
-            `proxy: ${src.source} → ${src.host}:${src.port} (CONNECT verified)`,
-          );
-          resolve(src.port);
-        }
-      });
-      const onFail = () => {
-        connReq.destroy();
-        if (--pending === 0 && !found) {
-          _proxyPortCache = 0;
-          _proxyPortCacheTs = Date.now() - PROXY_CACHE_TTL + 30000; // v10.0.5: 无代理时只缓存30秒(非5分钟), 快速恢复
-          log("proxy: no CONNECT-capable port found (30s cache)");
-          resolve(0);
-        }
-      };
-      connReq.on("error", onFail);
-      connReq.on("timeout", onFail);
-      connReq.end();
-    }
-  });
-}
-
-// 返回探测到的代理主机 (支持非localhost代理)
-function _getProxyHost() {
-  return _proxyPortHostCache || PROXY_HOST;
-}
-
 // ── Raw HTTPS POST (返回Buffer, 用于protobuf二进制响应) ──
 function _httpsPostRaw(url, body, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -1533,7 +1377,7 @@ function _httpsPostRawViaProxy(
       }
       const req = https.request(
         {
-          socket,
+          socket, // 复用CONNECT隧道
           hostname: parsed.hostname,
           path: parsed.pathname + parsed.search,
           method: "POST",
@@ -2227,6 +2071,11 @@ async function _resolveHostIP(hostname) {
           clearTimeout(timer);
           reject(e);
         });
+        connReq.on("timeout", () => {
+          clearTimeout(timer);
+          connReq.destroy();
+          reject(new Error("proxy_conn_timeout"));
+        });
         connReq.end();
       });
       if (dohResult && /^\d+\.\d+\.\d+\.\d+$/.test(dohResult)) {
@@ -2319,7 +2168,7 @@ async function fetchAccountQuota(email, password) {
   const relayUrl = `https://${RELAY_HOST}/windsurf/plan-status`;
 
   // v10: 5通道竞速 — 官方直连优先, 中继兜底
-  // 通道优先级: 官方直连(proxy) > 官方直连(direct) > Relay直连IP > Relay(proxy)
+  // 通道优先级: 官方API直连(proxy) > 官方API直连(direct) > Relay直连IP > Relay(proxy)
   const channels = [
     // 通道1: 官方API直连 via proxy (最可靠: 官方服务器不限流)
     {
@@ -2573,6 +2422,73 @@ async function injectAuth(idToken) {
     ok: false,
     error: "inject failed (五感模式: 已保留现有会话)",
   };
+}
+
+// ── v10.0.5: 更新preferredAccount — 道法自然填补handleAuthToken的空缺 ──
+// Windsurf v1.110.1 handleAuthToken只创建session, 不调updateAccountPreference
+// 导致codeium.windsurf-windsurf_auth仍是旧账号, Cascade agent继续用旧apiKey
+// 修复: 注入成功后直接写state.vscdb完成首选账号同步
+function _syncPreferredAccount(accountLabel) {
+  if (!accountLabel || accountLabel === "?") return;
+  try {
+    const dbPath = path.join(
+      process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
+      "Windsurf",
+      "User",
+      "globalStorage",
+      "state.vscdb",
+    );
+    if (!fs.existsSync(dbPath)) {
+      log(`syncPref: state.vscdb not found`);
+      return;
+    }
+    // 使用sqlite3原生模块 (Windsurf/VSCode内置)
+    let sqlite3;
+    try {
+      sqlite3 = require("@vscode/sqlite3");
+    } catch {
+      log(`syncPref: @vscode/sqlite3 not available, skipping`);
+      return;
+    }
+    const db = new sqlite3.Database(dbPath, (err) => {
+      if (err) {
+        log(`syncPref: open error: ${err.message}`);
+        return;
+      }
+      const key = "codeium.windsurf-windsurf_auth";
+      db.get(
+        "SELECT value FROM ItemTable WHERE key = ?",
+        [key],
+        (err2, row) => {
+          if (err2) {
+            log(`syncPref: read error: ${err2.message}`);
+            db.close();
+            return;
+          }
+          if (row && row.value === accountLabel) {
+            log(`syncPref: already ${accountLabel}`);
+            db.close();
+            return;
+          }
+          const oldVal = row?.value || "(none)";
+          db.run(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+            [key, accountLabel],
+            (err3) => {
+              if (err3) {
+                log(`syncPref: write error: ${err3.message}`);
+              } else {
+                log(`syncPref: ${oldVal} \u2192 ${accountLabel}`);
+              }
+              db.close();
+            },
+          );
+        },
+      );
+    });
+  } catch (e) {
+    log(`syncPref error: ${e.message}`);
+  }
 }
 
 // 提取注入结果的通用辅助 (避免重复代码)
@@ -2960,6 +2876,8 @@ async function switchToAccount(email, password) {
   );
   _lastSwitchTime = Date.now();
   _writeInstanceClaim(email);
+  // v10.0.5: 同步preferredAccount — 填补handleAuthToken的空缺
+  _syncPreferredAccount(injectResult.account);
   try {
     fs.mkdirSync(WAM_DIR, { recursive: true });
     fs.writeFileSync(
@@ -3183,6 +3101,7 @@ async function monitorActiveQuota() {
           15000;
         if (autoRotate && !_switching && !switchCooldown) {
           let bestI = _predictiveCandidate >= 0 ? _predictiveCandidate : -1;
+          if (bestI === activeI) bestI = -1;
           if (bestI >= 0) {
             const candAcc = _store.get(bestI);
             if (
@@ -3302,6 +3221,7 @@ async function monitorActiveQuota() {
             _predictiveCandidate >= 0
               ? _predictiveCandidate
               : _store.getBestIndex(activeI, true);
+          if (bestI === activeI) bestI = -1;
           if (bestI >= 0) {
             const bestAcc = _store.get(bestI);
             log(`⚡ 耗尽保护: ${reason} → ${bestAcc.email.substring(0, 20)}`);
@@ -3549,7 +3469,7 @@ function updateStatusBar() {
   if (_mode === "official") {
     _statusBarItem.text = "$(key) 官方模式";
     _statusBarItem.tooltip =
-      "WAM v10.0.4 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
+      "WAM v10.0.5 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
     return;
   }
   const s = _store.getPoolStats();
@@ -3566,7 +3486,7 @@ function updateStatusBar() {
     const monTag = _monitorActive ? "$(sync~spin)" : "$(zap)";
     _statusBarItem.text = `${monTag}${droughtTag} D${liveD}%·W${liveW}% ${s.available}/${s.pwCount}号${inUseTag}${waitTag}`;
     _statusBarItem.tooltip =
-      `WAM v10.0.4 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
+      `WAM v10.0.5 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
       `活跃: ${activeAcc.email}\n${h.plan}\n` +
       `号池: ${s.available}可用 · ${s.exhausted}耗尽 · ${s.waiting}等重置\n` +
       (s.drought
@@ -3577,7 +3497,7 @@ function updateStatusBar() {
       `监测: ${_totalMonitorCycles}轮 · ${_totalChangesDetected}次变动`;
   } else {
     _statusBarItem.text = `$(zap) ${s.pwCount}号`;
-    _statusBarItem.tooltip = `WAM v10.0.4 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
+    _statusBarItem.tooltip = `WAM v10.0.5 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
   }
 }
 
@@ -3637,6 +3557,64 @@ async function handleWebviewMessage(msg) {
           _ensureEngines();
         } else {
           vscode.window.showErrorMessage(`WAM: 切换失败 — ${result.error}`);
+        }
+      } finally {
+        _switching = false;
+        refreshAll();
+      }
+      break;
+    }
+    case "autoSwitch": {
+      // 自动切号: 跳过当前账号, 从根本上避免无效切换
+      if (_mode === "official") {
+        vscode.window.showWarningMessage(
+          "WAM: 官方模式下无法切号，请先切回WAM模式",
+        );
+        break;
+      }
+      if (msg.index === _store.activeIndex) {
+        broadcastMessage({ type: "toast", text: "已是当前账号，跳过切换" });
+        refreshAll();
+        break;
+      }
+      const autoAcc = _store.get(msg.index);
+      if (!autoAcc || !autoAcc.password) break;
+      if (_switching) {
+        const autoLockAge = Date.now() - _switchingStartTime;
+        if (autoLockAge < 30000) {
+          vscode.window.showWarningMessage(
+            `WAM: 正在切换中(${Math.round(autoLockAge / 1000)}s)...请稍候`,
+          );
+          break;
+        }
+        log(
+          `autoSwitch: 手动抢占 — 强制释放超时锁(${Math.round(autoLockAge / 1000)}s)`,
+        );
+        _switching = false;
+      }
+      _switching = true;
+      _switchingStartTime = Date.now();
+      broadcastMessage({ type: "switching", index: msg.index });
+      try {
+        const autoResult = await switchToAccount(
+          autoAcc.email,
+          autoAcc.password,
+        );
+        if (autoResult.ok) {
+          _store.activeIndex = msg.index;
+          _store.switchCount++;
+          _store.clearInUse(autoAcc.email);
+          _writeInstanceClaim(autoAcc.email);
+          _quotaSnapshots.delete(autoAcc.email.toLowerCase());
+          _snapshotDirty = true;
+          _schedulePersist();
+          _store.save();
+          vscode.window.showInformationMessage(
+            `WAM: 自动切换到 ${autoResult.account} (${autoResult.ms}ms)`,
+          );
+          _ensureEngines();
+        } else {
+          vscode.window.showErrorMessage(`WAM: 切换失败 — ${autoResult.error}`);
         }
       } finally {
         _switching = false;
@@ -3932,6 +3910,7 @@ function buildHtml(store) {
         <span class="ql" style="color:${wColor}">${isUnchecked ? "W?" : "W" + wPct}</span>
       </span>
       <span class="acts">
+        <button class="b ar" onclick="ar(${i})" title="自动切号(跳过当前账号)"${isActive || _mode === "official" ? ' disabled style="opacity:.3;cursor:not-allowed"' : ""}>&#9654;</button>
         <button class="b sw" onclick="sw(${i})" title="手动切换(无限制)"${_mode === "official" ? ' disabled style="opacity:.3;cursor:not-allowed"' : ""}>&#9889;</button>
         <button class="b cp" onclick="cp(${i})" title="复制账号密码">&#128203;</button>
         <button class="b rm" onclick="rm(${i})" title="删除">&times;</button>
@@ -4080,6 +4059,8 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .ql{font-size:10px;font-weight:600;width:26px;text-align:right}
 .acts{display:flex;gap:2px;flex-shrink:0}
 .b{width:20px;height:20px;border:none;border-radius:3px;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0;transition:all .1s}
+.b.ar{background:#1a3a1a;color:#4ec9b0}
+.b.ar:hover:not(:disabled){background:#2a4a2a;transform:scale(1.1)}
 .b.sw{background:var(--btn);color:#fff}
 .b.sw:hover{background:var(--btn-h);transform:scale(1.1)}
 .b.cp{background:#333;color:#aaa}
@@ -4189,6 +4170,7 @@ const vscode = acquireVsCodeApi();
 function send(type, index) { vscode.postMessage({type, index}); }
 function setWamMode(mode) { vscode.postMessage({type:'setMode', mode}); }
 function sw(i) { send('switch', i); }
+function ar(i) { send('autoSwitch', i); }
 function cp(i) { vscode.postMessage({type:'copyAccount', index:i}); }
 function rm(i) { send('remove', i); }
 
@@ -4367,6 +4349,8 @@ function startFileWatcher() {
               sessionId: result.sessionId || "",
             }),
           );
+          // v10.0.5: 同步preferredAccount
+          if (result.ok) _syncPreferredAccount(result.account);
           log(
             `watcher: inject ${result.ok ? "OK" : "FAIL"}: ${result.account || result.error}`,
           );
@@ -4389,7 +4373,7 @@ function startFileWatcher() {
 // ============================================================
 function activate(context) {
   log(
-    `activate v10.0.4-五感模式 — inst=${_instanceId} 单key·登录限流·quota冷却·失败冷却·3次注入·指数退避·代理快恢·CONNECT验证·agent隔离·纯热替换·绝不logout·绝不杀agent·Token预热`,
+    `activate v10.0.5-五感模式 — inst=${_instanceId} 单key·登录限流·quota冷却·失败冷却·3次注入·指数退避·代理快恢·CONNECT验证·agent隔离·纯热替换·绝不logout·绝不杀agent·Token预热·preferredAccount同步`,
   );
 
   const gsPath =
@@ -4683,7 +4667,7 @@ function activate(context) {
       const inUseEmails = [..._store._inUse.keys()]
         .map((e) => e.substring(0, 15))
         .join(", ");
-      let msg = `WAM v10.0.4 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
+      let msg = `WAM v10.0.5 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
       if (activeAcc) msg += ` | 活跃: ${activeAcc.email.substring(0, 20)}`;
       if (_store._inUse.size > 0) msg += ` | 使用中: ${inUseEmails}`;
       vscode.window.showInformationMessage(msg);
@@ -4717,10 +4701,11 @@ function activate(context) {
             .getConfiguration("wam")
             .get("autoRotate", true);
           if (!autoRotate) return;
-          const bestI =
+          let bestI =
             _predictiveCandidate >= 0
               ? _predictiveCandidate
               : _store.getBestIndex(_store.activeIndex, true);
+          if (bestI === _store.activeIndex) bestI = -1;
           if (bestI < 0) {
             log("rate-limit: no available account");
             return;
