@@ -1405,7 +1405,7 @@ let _proxyCache = null; // {host, port, source} | null — 验证通过的代理
 let _proxyCacheTs = 0;
 const PROXY_CACHE_TTL = 300000; // 5分钟 TTL
 const PROXY_FAIL_TTL = 30000; // 失败缓存30秒 (不反复锤死端口)
-let _proxyDetectInProgress = false;
+let _proxyDetectPromise = null; // v16.1: 共享Promise — 并发调用方等待同一次检测, 不再返回null
 const _PROXY_NOT_FOUND = Symbol("no_proxy"); // 区分"未检测"(null)和"检测过无结果"
 
 // 功能验证: 不仅TCP连通, 还要CONNECT隧道能打通Google
@@ -1561,13 +1561,10 @@ function _detectProxy() {
     return Promise.resolve(_proxyCache);
   if (_proxyCache === _PROXY_NOT_FOUND && now - _proxyCacheTs < PROXY_FAIL_TTL)
     return Promise.resolve(null);
-  if (_proxyDetectInProgress)
-    return Promise.resolve(
-      _proxyCache && _proxyCache !== _PROXY_NOT_FOUND ? _proxyCache : null,
-    );
-  _proxyDetectInProgress = true;
+  // v16.1: 共享Promise — 并发调用方等待同一次检测结果, 不再返回null丢失代理
+  if (_proxyDetectPromise) return _proxyDetectPromise;
 
-  return new Promise(async (resolve) => {
+  _proxyDetectPromise = new Promise(async (resolve) => {
     // v16.0: 构建候选列表 — 锚定本源·动态发现·零固定常量
     // 优先级: 系统代理(env/vscode/registry) → localhost动态扫描 → LAN网关扫描
     const candidates = [];
@@ -1614,7 +1611,7 @@ function _detectProxy() {
     if (candidates.length === 0) {
       _proxyCache = _PROXY_NOT_FOUND;
       _proxyCacheTs = Date.now();
-      _proxyDetectInProgress = false;
+      _proxyDetectPromise = null;
       resolve(null);
       return;
     }
@@ -1663,7 +1660,7 @@ function _detectProxy() {
           source: winner.source,
         };
         _proxyCacheTs = Date.now();
-        _proxyDetectInProgress = false;
+        _proxyDetectPromise = null;
         log(
           `proxy: ${winner.host}:${winner.port} verified ✓ (${winner.source})`,
         );
@@ -1676,15 +1673,17 @@ function _detectProxy() {
     // 全部失败
     _proxyCache = _PROXY_NOT_FOUND;
     _proxyCacheTs = Date.now();
-    _proxyDetectInProgress = false;
+    _proxyDetectPromise = null;
     resolve(null);
   });
+  return _proxyDetectPromise;
 }
 
 // 代理失效时强制刷新缓存 (被调用方在请求失败时调用)
 function _invalidateProxyCache() {
   _proxyCache = null;
   _proxyCacheTs = 0;
+  _proxyDetectPromise = null;
 }
 
 // ── v15.1: Bridge就绪信号 + 自动确保 — 道法自然·有桥才走桥 ──
