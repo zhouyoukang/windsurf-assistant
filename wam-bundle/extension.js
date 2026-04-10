@@ -1,7 +1,8 @@
-// WAM v14.0 — 道法自然·万法归宗: 官方API直连·系统代理自适应·版本自适应注入·多源额度竞速
+// WAM v15.0 — 万法归宗·道法自然: Chromium原生网络桥·官方API直连·系统代理自适应·版本自适应注入
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
 // 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
-// v14.0: 不依赖网络环境·电脑环境·Windsurf版本 · 从根源彻底解决所有问题 · 道法自然
+// v15.0: Webview fetch()走Chromium渲染进程 — 与Windsurf官方登录完全同一网络路径
+// 只要用户能官方登录Windsurf → 此通道必然可达Firebase/Codeium · 道法自然
 const vscode = require("vscode");
 const crypto = require("crypto");
 const https = require("https");
@@ -17,7 +18,12 @@ const FIREBASE_KEYS = ["AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"];
 const FIREBASE_REFERER = "https://windsurf.com/";
 const FIREBASE_HOST = "identitytoolkit.googleapis.com";
 const PROXY_HOST = "127.0.0.1";
-const PROXY_PORTS = [7890, 7897, 7891, 10808, 1080];
+const PROXY_PORTS = [
+  7890, 7897, 7891, 10808, 10809, 20808, 20809, 1080, 2080, 8118, 8889, 1081,
+  2081, 3128, 8080, 8123, 8124, 8125, 8126, 8127, 8128, 8129, 8130, 8131, 8132,
+  8133, 8134, 8135, 8136, 8137, 8138, 8139, 8140, 8141, 8142, 8143, 8144, 8145,
+  8146, 8147, 8148, 8149, 8150, 8151, 8152, 8153,
+];
 // v14.0: 官方API端点 — 直连Windsurf/Codeium, 不经中继, 根治relay单点故障
 const OFFICIAL_PLAN_STATUS_URLS = [
   "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
@@ -47,6 +53,11 @@ let _sidebarProvider = null;
 let _editorPanel = null;
 let _statusBarItem = null;
 let _watcher = null;
+// v15: Chromium原生网络桥 — 万法归宗
+// Webview在Chromium渲染进程中运行, 自动继承系统代理/DNS/TLS
+// 只要用户能官方登录Windsurf, 此通道必然可达Firebase/Codeium
+let _fetchIdCounter = 0;
+const _fetchPending = new Map();
 let _switching = false;
 let _switchingStartTime = 0; // v7.3: 切号锁开始时间, 用于超时释放+手动抢占
 let _pollTimer = null;
@@ -1441,6 +1452,38 @@ function _getSystemProxy() {
       }
     }
   } catch {}
+  // v14.3.2: Windows registry proxy detection — 读取系统代理设置 (v2rayN/Clash/SSR等设置系统代理时写入此处)
+  if (process.platform === "win32") {
+    try {
+      const { execSync } = require("child_process");
+      const regOut = execSync(
+        'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer 2>nul',
+        { encoding: "utf8", timeout: 2000 },
+      );
+      const m = regOut.match(/ProxyServer\s+REG_SZ\s+(.+)/i);
+      if (m) {
+        const val = m[1].trim();
+        // 格式: "host:port" 或 "http=host:port;https=host:port;..."
+        const simple = val.match(/^(?:https?:\/\/)?([^:;=\/]+):(\d+)$/);
+        if (simple) {
+          return {
+            host: simple[1],
+            port: parseInt(simple[2]),
+            source: "registry",
+          };
+        }
+        // 协议前缀格式: https=host:port
+        const proto = val.match(/https?=([^:;]+):(\d+)/);
+        if (proto) {
+          return {
+            host: proto[1],
+            port: parseInt(proto[2]),
+            source: "registry",
+          };
+        }
+      }
+    } catch {}
+  }
   return null;
 }
 
@@ -1530,6 +1573,62 @@ function _invalidateProxyCache() {
   _proxyPortCache = null;
   _proxyHostCache = PROXY_HOST;
   _proxyPortCacheTs = 0;
+}
+
+// ── v15: Chromium原生网络桥 — 万法归宗·道法自然 ──
+// 核心原理: Webview的fetch()运行在Chromium渲染进程, 自动继承:
+//   1. Windows注册表系统代理 (v2rayN/Clash等)
+//   2. PAC脚本自动代理配置
+//   3. Chromium DNS解析 (绕过Node.js DNS劫持)
+//   4. 与Windsurf官方登录完全相同的网络路径
+// 只要用户能用Windsurf → 此通道必然能到达Firebase/Codeium
+function _nativeFetch(url, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const wv =
+      _sidebarProvider && _sidebarProvider._view
+        ? _sidebarProvider._view.webview
+        : _editorPanel
+          ? _editorPanel.webview
+          : null;
+    if (!wv) {
+      reject(new Error("no_webview"));
+      return;
+    }
+    const id = ++_fetchIdCounter;
+    const timer = setTimeout(() => {
+      _fetchPending.delete(id);
+      reject(new Error("native_timeout"));
+    }, opts.timeout || 15000);
+    _fetchPending.set(id, { resolve, reject, timer });
+    const msg = {
+      type: "_fetch",
+      id,
+      url,
+      method: opts.method || "POST",
+      headers: opts.headers || {},
+      binary: !!opts.binary,
+    };
+    if (Buffer.isBuffer(opts.body)) {
+      msg.body = Array.from(opts.body);
+      msg.bodyType = "binary";
+    } else if (opts.body != null) {
+      msg.body = String(opts.body);
+      msg.bodyType = "text";
+    }
+    wv.postMessage(msg);
+  });
+}
+
+function _handleFetchResult(msg) {
+  const cb = _fetchPending.get(msg.id);
+  if (!cb) return;
+  clearTimeout(cb.timer);
+  _fetchPending.delete(msg.id);
+  if (msg.ok) {
+    cb.resolve({ status: msg.status, data: msg.data });
+  } else {
+    cb.reject(new Error(msg.error || "native_fetch_failed"));
+  }
 }
 
 // ── Raw HTTPS POST (返回Buffer, 用于protobuf二进制响应) ──
@@ -1931,6 +2030,28 @@ async function _firebaseVia(channel, email, password, key) {
         });
       });
 
+    case "native":
+      // v15: Chromium原生通道 — 万法归宗
+      // Webview的fetch()自动继承系统代理, 与Windsurf官方登录网络路径完全一致
+      return _nativeFetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Referer: FIREBASE_REFERER,
+        },
+        body: payload,
+        timeout: 12000,
+      }).then((resp) => {
+        if (typeof resp.data === "string") {
+          try {
+            return JSON.parse(resp.data);
+          } catch {
+            throw new Error("native_parse_error");
+          }
+        }
+        throw new Error("native_invalid_response");
+      });
+
     default:
       throw new Error(`unknown_channel: ${channel}`);
   }
@@ -1940,7 +2061,7 @@ async function _firebaseVia(channel, email, password, key) {
 // 旧版v10: for(key of KEYS){Promise.any([ch1,ch2])} 串行迭代key → 实测42s超时
 // v11: ALL keys×channels 同时发射, 第一个成功立即返回 → 实测1-3s, 最差10s
 async function firebaseLogin(email, password) {
-  const channels = ["proxy", "direct"];
+  const channels = ["native", "proxy", "direct"];
   const errors = {};
 
   // Phase 1: 全并行竞速 — 2keys × 2channels = 4个请求同时发射
@@ -2212,9 +2333,30 @@ async function fetchAccountQuota(email, password) {
   const proto = encodeProtoString(loginResult.idToken);
   const planUrl = `https://${RELAY_HOST}/windsurf/plan-status`;
 
-  // v14.0: 4通道竞速 — 官方API直连优先, 中继兗底 (根治relay单点故障)
-  // 优先级: 官方直连(proxy) > 官方直连(direct) > Relay直连IP > Relay(proxy)
+  // v15: 5通道竞速 — Chromium原生优先, 官方API直连次之, 中继兜底
+  // 优先级: Chromium原生(万法归宗) > 官方(proxy) > 官方(direct) > Relay IP > Relay(proxy)
   const channels = [
+    // 通道0: Chromium原生 — 万法归宗 (系统代理自适应, 不依赖手动探测)
+    async () => {
+      for (const url of OFFICIAL_PLAN_STATUS_URLS) {
+        try {
+          const resp = await _nativeFetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/proto",
+              "connect-protocol-version": "1",
+            },
+            body: proto,
+            binary: true,
+            timeout: 10000,
+          });
+          if (resp.status === 200 && resp.data && resp.data.length > 20) {
+            return { status: resp.status, buf: Buffer.from(resp.data) };
+          }
+        } catch {}
+      }
+      throw new Error("all_official_native_failed");
+    },
     // 通道1: 官方API via proxy (最可靠: 官方服务器不限流WAM)
     async () => {
       const port = await _detectProxy();
@@ -3858,6 +4000,11 @@ function refreshAll() {
 // 消息处理 (sidebar + editor panel 共用)
 // ============================================================
 async function handleWebviewMessage(msg) {
+  // v15: Chromium网络桥响应 — 不进入switch, 直接分发
+  if (msg.type === "_fetchResult") {
+    _handleFetchResult(msg);
+    return;
+  }
   switch (msg.type) {
     case "switch": {
       // 手动切号: 无任何限制 (不检查in-use)
@@ -4291,6 +4438,7 @@ function buildHtml(store) {
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https: http:;">
 <style>
 :root{--bg:var(--vscode-editor-background);--fg:var(--vscode-editor-foreground);--border:var(--vscode-panel-border,#2d2d2d);--input-bg:var(--vscode-input-background,#1e1e1e);--input-border:var(--vscode-input-border,#3c3c3c);--btn:var(--vscode-button-background,#0e639c);--btn-h:var(--vscode-button-hoverBackground,#1177bb);--btn2:#264f78;--green:#4ec9b0;--orange:#ce9178;--red:#f44;--blue:#9cdcfe}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -4515,11 +4663,33 @@ document.addEventListener('change', e => {
   if (e.target.classList.contains('chk')) updateBatchBar();
 });
 
-window.addEventListener('message', e => {
+window.addEventListener('message', async (e) => {
   const msg = e.data;
+  // v15: Chromium\u7f51\u7edc\u6865 \u2014 \u4e07\u6cd5\u5f52\u5b97
+  if (msg.type === '_fetch') {
+    try {
+      const opts = { method: msg.method || 'POST', headers: msg.headers || {} };
+      if (msg.bodyType === 'binary' && Array.isArray(msg.body)) {
+        opts.body = new Uint8Array(msg.body);
+      } else if (msg.body != null) {
+        opts.body = msg.body;
+      }
+      const resp = await fetch(msg.url, opts);
+      if (msg.binary) {
+        const buf = await resp.arrayBuffer();
+        vscode.postMessage({ type: '_fetchResult', id: msg.id, ok: true, status: resp.status, data: Array.from(new Uint8Array(buf)) });
+      } else {
+        const text = await resp.text();
+        vscode.postMessage({ type: '_fetchResult', id: msg.id, ok: true, status: resp.status, data: text });
+      }
+    } catch (err) {
+      vscode.postMessage({ type: '_fetchResult', id: msg.id, ok: false, error: err.message });
+    }
+    return;
+  }
   if (msg.type === 'switching') {
     const row = document.querySelector('.row[data-i="' + msg.index + '"]');
-    if (row) { row.classList.add('switching'); showToast('正在切换...'); }
+    if (row) { row.classList.add('switching'); showToast('\u6B63\u5728\u5207\u6362...'); }
   }
   if (msg.type === 'toast') showToast(msg.text);
   if (msg.type === 'quotaChange') {
@@ -4698,6 +4868,45 @@ async function selfTest() {
     });
   } catch (e) {
     results.push({ test: "proxy", ok: false, detail: e.message });
+  }
+
+  // 1.5 Chromium原生网络桥 (v15: 万法归宗)
+  try {
+    const wvAvail =
+      !!(_sidebarProvider && _sidebarProvider._view) || !!_editorPanel;
+    if (wvAvail) {
+      const nativeBody = JSON.stringify({ returnSecureToken: true });
+      try {
+        const nr = await _nativeFetch(
+          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${FIREBASE_KEYS[0]}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: nativeBody,
+            timeout: 8000,
+          },
+        );
+        results.push({
+          test: "native_bridge",
+          ok: true,
+          detail: `Chromium fetch OK (status:${nr.status})`,
+        });
+      } catch (e) {
+        results.push({
+          test: "native_bridge",
+          ok: false,
+          detail: `webview avail but fetch failed: ${e.message}`,
+        });
+      }
+    } else {
+      results.push({
+        test: "native_bridge",
+        ok: false,
+        detail: "no webview — sidebar未打开",
+      });
+    }
+  } catch (e) {
+    results.push({ test: "native_bridge", ok: false, detail: e.message });
   }
 
   // 2. Firebase连通性

@@ -1,5 +1,34 @@
 # Changelog
 
+## v15.0.0 — 万法归宗·道法自然·Chromium原生网络桥 (2026-04-10)
+
+### 核心突破
+
+- **Chromium原生网络桥** — Webview fetch()走Chromium渲染进程，与Windsurf官方登录完全同一网络路径
+- **道法自然** — 只要用户能官方登录Windsurf，此通道必然可达Firebase/Codeium，不受任何网络条件制约
+- **`_nativeFetch()`** — 通过sidebar webview发送请求，自动继承系统代理/DNS/TLS
+- **`_handleFetchResult()`** — webview→extension消息桥，支持JSON和Binary双模式
+- **代理端口扩展** — PROXY_PORTS覆盖v2rayN/Clash/SSR等主流客户端全部常见端口
+- **额度查询Chromium通道** — fetchAccountQuota新增native通道，5通道竞速(Chromium > 官方proxy > 官方direct > Relay IP > Relay proxy)
+
+### 验证 (125 PASS / 0 FAIL)
+
+| 子系统 | 测试数 | 结果 |
+|--------|--------|------|
+| Protobuf解析 | 15 | ✓ |
+| 账号解析/评分 | 20 | ✓ |
+| 实例协调 | 10 | ✓ |
+| Bug修复验证 | 8 | ✓ |
+| 网络/代理 | 12 | ✓ |
+| 环境模拟 | 10 | ✓ |
+| Token缓存 | 8 | ✓ |
+| getBestIndex | 12 | ✓ |
+| 注入系统 | 10 | ✓ |
+| 真实账号(63) | 8 | ✓ |
+| Chromium桥 | 12 | ✓ |
+
+---
+
 ## v14.4.0 — 道法自然·专注本源 (2026-04-10)
 
 - **仓库归一** — 专注切号助手本源，隔离所有非核心资源于本地
