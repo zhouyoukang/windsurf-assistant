@@ -1,119 +1,56 @@
 {
-	"name": "windsurf-login-helper",
-	"displayName": "Windsurf Login Helper",
-	"description": "Windsurf Account Manager v10 — 道法自然: 纯热替换·绝不logout·绝不杀agent·Token预热·Rate-limit拦截·智能轮转·零中断",
-	"version": "10.0.5",
-	"license": "MIT",
-	"engines": {
-		"vscode": "^1.85.0"
-	},
-	"categories": [
-		"Other"
-	],
-	"activationEvents": [
-		"onStartupFinished"
-	],
-	"main": "./dist/extension.js",
-	"contributes": {
-		"viewsContainers": {
-			"activitybar": [
-				{
-					"id": "windsurf-login",
-					"title": "Windsurf Login",
-					"icon": "media/icon.svg"
-				}
-			]
-		},
-		"views": {
-			"windsurf-login": [
-				{
-					"id": "windsurf-login.loginView",
-					"name": "Login",
-					"type": "webview"
-				}
-			]
-		},
-		"commands": [
-			{
-				"command": "wam.switchAccount",
-				"title": "切换账号",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.refreshCredits",
-				"title": "刷新积分",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.openPanel",
-				"title": "打开管理面板",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.switchMode",
-				"title": "切换模式 (本地/中转)",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.reprobeProxy",
-				"title": "重新探测代理",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.resetFingerprint",
-				"title": "重置设备指纹",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.panicSwitch",
-				"title": "紧急切换 (限流应急)",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.batchAdd",
-				"title": "批量添加账号",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.refreshAllCredits",
-				"title": "刷新全部积分并轮转",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.smartRotate",
-				"title": "智能轮转 (查全部·切最优)",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.importAccounts",
-				"title": "导入账号",
-				"category": "Windsurf Login"
-			},
-			{
-				"command": "wam.initWorkspace",
-				"title": "工作区配置 (智慧部署+源启动)",
-				"category": "Windsurf Login"
-			}
-		],
-		"configuration": {
-			"title": "无感切号",
-			"properties": {
-				"wam.autoRotate": {
-					"type": "boolean",
-					"default": true,
-					"description": "积分不足时自动切换到最高积分账号"
-				},
-				"wam.rotateFingerprint": {
-					"type": "boolean",
-					"default": true,
-					"description": "切号时自动轮转设备指纹 (防止服务端关联多账号到同一设备)"
-				}
-			}
-		}
-	},
-	"__metadata": {
-		"installedTimestamp": 1775020170514,
-		"targetPlatform": "undefined",
-		"size": 4487064
-	}
+  "name": "windsurf-login-helper",
+  "displayName": "WAM · Windsurf Account Manager",
+  "description": "WAM v14.2 — 道法自然: 官方API直连·系统代理自适应·版本自适应注入·多源额度竞速·根治hung注入·零环境依赖·纯热替换·绝不logout·绝不杀agent",
+  "version": "14.2.0",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./wam-bundle/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wam-container",
+          "title": "WAM · 无感切号",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "wam-container": [
+        {
+          "id": "wam.panel",
+          "name": "无感切号 · 账号管理",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "wam.openEditor", "title": "WAM: 管理面板" },
+      { "command": "wam.switchAccount", "title": "WAM: 切换账号" },
+      { "command": "wam.refreshAll", "title": "WAM: 刷新全部" },
+      { "command": "wam.addAccount", "title": "WAM: 添加账号" },
+      { "command": "wam.autoRotate", "title": "WAM: 智能轮转" },
+      { "command": "wam.panicSwitch", "title": "WAM: 紧急切换" },
+      { "command": "wam.injectToken", "title": "WAM: 注入Token" },
+      { "command": "wam.verifyAll", "title": "WAM: 验证清理 (剔除过期/无效账号)" },
+      { "command": "wam.scanExpiry", "title": "WAM: 刷新有效期 (批量获取缺失的planEnd)" },
+      { "command": "wam.officialMode", "title": "WAM: 官方模式 (暂停切号)" },
+      { "command": "wam.wamMode", "title": "WAM: WAM切号模式" },
+      { "command": "wam.status", "title": "WAM: 状态" },
+      { "command": "wam.selfTest", "title": "WAM: 自诊断 (网络/代理/端点/注入)" }
+    ],
+    "configuration": {
+      "title": "WAM 无感切号",
+      "properties": {
+        "wam.autoRotate": {
+          "type": "boolean",
+          "default": true,
+          "description": "检测额度变动时自动切换到未使用的最优账号"
+        }
+      }
+    }
+  }
 }

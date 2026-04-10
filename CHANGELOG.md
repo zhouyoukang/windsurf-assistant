@@ -1,5 +1,38 @@
 # Changelog
 
+## v14.2.0 — 万法归宗·根治全部环境依赖 (2026-06-17)
+
+### 架构重构（v10.x → v14.2）
+
+此版本是从v10.0.5到v14.2的**完整架构升级**，包含以下核心变更：
+
+#### 代理系统重构
+- **`_getSystemProxy()`** — 自动读取 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/VS Code `http.proxy` 配置
+- **`_detectProxy()`** — 系统代理优先→本地常见端口扫描，并行TCP探测+CONNECT功能验证
+- **`_proxyHostCache`** — 动态跟踪验证通过的代理Host（不再硬编码`127.0.0.1`）
+- **`_invalidateProxyCache()`** — 请求失败时强制刷新代理缓存，自动恢复
+
+#### 注入系统重构
+- **`INJECT_COMMANDS`** — 3命令候选列表，版本自适应（`provideAuthTokenToAuthProvider` / `codeium.provideAuthToken` / `windsurf.provideAuthToken`）
+- **`_workingInjectCmd`** — 缓存验证成功的命令，避免每次重新探测
+- **4阶段注入** — Phase1快探3s → Phase2收割4s → Phase3无条件重试5s → Phase4备选命令5s
+- **根治hung promise** — Phase3发新命令逃逸hung provider，不复用卡死的Promise
+- **连续失败重置** — `_consecutiveInjectFails >= 3` 时自动清除命令缓存，允许重新探测
+
+#### Firebase认证精简
+- **单key模式** — 移除多key轮转复杂度，单Firebase key + `Referer: https://windsurf.com/` 头
+- **Token缓存持久化** — `_token_cache.json` 跨重启保留，冷启动无需重新登录
+
+#### 额度查询增强
+- **3官方端点** — `server.codeium.com` + `web-backend.windsurf.com` + `register.windsurf.com`
+- **4通道竞速** — 官方proxy / 官方direct / 中继proxy / 中继direct，Promise.any最快返回
+
+#### 新增功能
+- **`wam.selfTest`** — 一键自诊断：网络连通性/代理验证/端点可达性/注入命令测试
+- **热部署支持** — `_reload_signal` 机制，无需重启即可更新扩展
+
+---
+
 ## v10.0.5 — 首选账号同步修复 (2026-04-09)
 
 ### 根因

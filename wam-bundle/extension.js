@@ -1,8 +1,7 @@
-// WAM v10.0.5 — 道法自然: 单key精简·登录限流·quota冷却·指数退避·代理快恢·CONNECT验证·agent隔离·四层代理·多源竞速·官方直连·缓存降级·preferredAccount同步
+// WAM v14.0 — 道法自然·万法归宗: 官方API直连·系统代理自适应·版本自适应注入·多源额度竞速
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
-// 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host
-// v10.0.5: 道法自然 — Windsurf v1.110.1的handleAuthToken不再更新preferredAccount
-// 必须写state.vscdb的codeium.windsurf-windsurf_auth才能完成真正的账号切换
+// 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
+// v14.0: 不依赖网络环境·电脑环境·Windsurf版本 · 从根源彻底解决所有问题 · 道法自然
 const vscode = require("vscode");
 const crypto = require("crypto");
 const https = require("https");
@@ -12,24 +11,34 @@ const tls = require("tls");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const dns = require("dns");
 
 // ── 配置 ──
-const FIREBASE_KEYS = [
-  "AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY",
-  "AIzaSyDKm6GGxMJfCbNf-k0kPytiGLaqFJpeSac", // v10.0.4: restored — single key = single point of failure
-];
+const FIREBASE_KEYS = ["AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"];
+const FIREBASE_REFERER = "https://windsurf.com/";
 const FIREBASE_HOST = "identitytoolkit.googleapis.com";
 const PROXY_HOST = "127.0.0.1";
-const PROXY_PORTS = [
-  7890, 7897, 7891, 10808, 10809, 20808, 20809, 1080, 1081, 8118, 8889, 2080,
+const PROXY_PORTS = [7890, 7897, 7891, 10808, 1080];
+// v14.0: 官方API端点 — 直连Windsurf/Codeium, 不经中继, 根治relay单点故障
+const OFFICIAL_PLAN_STATUS_URLS = [
+  "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
+  "https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
+  "https://register.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
 ];
+// v14.0: 注入命令候选 — 版本自适应, 按优先级尝试
+const INJECT_COMMANDS = [
+  "windsurf.provideAuthTokenToAuthProvider",
+  "codeium.provideAuthToken",
+  "windsurf.provideAuthToken",
+];
+let _workingInjectCmd = null; // 缓存验证成功的注入命令
 const WAM_DIR = path.join(os.homedir(), ".wam-hot");
 const TOKEN_FILE = path.join(WAM_DIR, "oneshot_token.json");
 const RESULT_FILE = path.join(WAM_DIR, "inject_result.json");
 const LOG_FILE = path.join(WAM_DIR, "wam.log");
 const SNAPSHOT_FILE = path.join(WAM_DIR, "quota_snapshots.json");
 const INUSE_FILE = path.join(WAM_DIR, "inuse_marks.json");
+const RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
+const RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 const PURGE_INTERVAL_MS = 6 * 3600 * 1000; // 每6小时自动检查一次
 
@@ -48,15 +57,6 @@ const MODE_FILE = path.join(WAM_DIR, "wam_mode.json");
 
 // ── 额度查询 ──
 const RELAY_HOST = "168666okfa.xyz";
-// v10: 官方API端点 — 直连Windsurf/Codeium, 不经中继, 根治429
-const OFFICIAL_PLAN_STATUS_URLS = [
-  "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
-  "https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
-];
-// v10: 全局请求计数器 — 跨实例文件锁协调
-const GLOBAL_RATE_FILE = path.join(WAM_DIR, "global_rate.json");
-const GLOBAL_RATE_WINDOW = 60000; // 60秒窗口
-const GLOBAL_RATE_MAX = 30; // 窗口内最大请求数
 const MONITOR_FAST_MS = 3000; // 活跃账号监测: 3秒 (锚定: 尽快捕捉发消息后的额度波动)
 const SCAN_SLOW_MS = 45000; // 全量后台扫描: 45秒
 const SCAN_BATCH_SIZE = 10; // 每轮后台扫描账号数 (加大覆盖面)
@@ -76,6 +76,8 @@ const INSTANCE_DEAD_MS = 60000; // 实例死亡判定: 60秒无心跳
 
 let _quotaSnapshots = new Map(); // email -> {daily, weekly, ts}
 let _tokenCache = new Map(); // email -> {idToken, expiresAt}
+const TOKEN_CACHE_FILE = path.join(WAM_DIR, "_token_cache.json"); // v13.1: 持久化
+let _tokenCacheDirty = false; // 标记是否需要落盘
 let _monitorTimer = null;
 let _scanTimer = null;
 let _scanRunning = false;
@@ -86,29 +88,29 @@ let _lastMonitorSaveTs = 0; // 监测循环save节流时间戳
 let _totalChangesDetected = 0;
 let _burstUntil = 0; // 突发模式截止时间戳
 let _consecutiveChanges = 0; // 连续变动计数 (锚定强度)
-let _lastSwitchTime = 0; // 上次切号时间戳
+let _lastSwitchTime = 0; // 上次切号时戳
+let _lastInjectFail = 0; // v13.4: 上次注入失败时间戳
+let _consecutiveInjectFails = 0; // v14.2: 连续注入失败计数 → 触发_workingInjectCmd重置
+const INJECT_FAIL_COOLDOWN = 10000; // v14.2: 注入失败后10s冷却 (20s→10s, 根治hung provider恢复慢)
 let _lastSelfActivity = 0; // 上次本实例活动时间 (编辑器/终端/对话)
 let _instanceId = crypto.randomBytes(4).toString("hex"); // 本实例唯一ID
 let _heartbeatTimer = null;
 let _predictiveCandidate = -1; // 预判候选账号索引 (-1=无)
 let _prewarmedToken = null; // v8: 预热Token缓存 {email, idToken, ts} — 道法自然: 切号前已备好弹药
 let _rateLimitWatcher = null; // v8: Rate-limit错误拦截器
+let _reloadWatcher = null; // v13.6: 热部署自动重载定时器
 let _droughtCache = { value: false, ts: 0 }; // Weekly干旱缓存 (10秒TTL)
-let _monitorConsecutiveFails = 0; // monitor连续失败计数 (指数退避)
-let _lastSwitchAttemptTime = 0; // v10.0.6: 上次切号尝试时间(含失败), 防止失败后立即重试
-// v10.1.0: Firebase登录限流 — 根治quota exhaustion
-const _firebaseKeyQuotaCooldown = new Map(); // keySuffix → {until, streak} — quota exceeded后冷却, 指数退避
-const FIREBASE_QUOTA_COOLDOWN_BASE = 15000; // 基础冷却15秒 (v10.0.4: 降低避免deadlock)
-const FIREBASE_QUOTA_COOLDOWN_MAX = 60000; // 最大冷却60秒 (v10.0.4: 降低避免deadlock)
-const _firebaseLoginTimestamps = []; // 全局登录请求时间戳数组 (滑动窗口)
-const FIREBASE_LOGIN_RPM = 15; // 每分钟最多15次Firebase登录 (Google限制~100/min, 留安全余量)
-const FIREBASE_LOGIN_WINDOW = 60000; // 滑动窗口60秒
+let _tokenPoolTimer = null; // v12: 永续Token活水池定时器
 
+let _logDirReady = false;
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
-  try {
-    fs.mkdirSync(WAM_DIR, { recursive: true });
-  } catch {}
+  if (!_logDirReady) {
+    try {
+      fs.mkdirSync(WAM_DIR, { recursive: true });
+      _logDirReady = true;
+    } catch {}
+  }
   try {
     fs.appendFileSync(LOG_FILE, line);
   } catch {}
@@ -308,20 +310,26 @@ function isClaudeAvailable(health) {
 function isAccountSwitchable(health) {
   // Claude不可用(Free/试用过期) → 不可切
   if (!isClaudeAvailable(health)) return false;
-  const eff = Math.min(health.daily, health.weekly);
+  // v9.3: weeklyUnknown时只用daily判断, 不因W未知而误拒
+  const effectiveW = health.weeklyUnknown ? health.daily : health.weekly;
+  const eff = Math.min(health.daily, effectiveW);
   if (eff > AUTO_SWITCH_THRESHOLD) return true;
-  // Weekly干旱模式: Daily充足即可用 (W0是全局问题，切号无法解决)
-  if (isWeeklyDrought() && health.daily > AUTO_SWITCH_THRESHOLD) return true;
+  // Weekly干旱模式 或 weeklyUnknown: Daily充足即可用
+  if (
+    (isWeeklyDrought() || health.weeklyUnknown) &&
+    health.daily > AUTO_SWITCH_THRESHOLD
+  )
+    return true;
   // Daily耗尽但即将重置 + Weekly充足 → 仍可用(等重置)
   if (
     health.daily <= AUTO_SWITCH_THRESHOLD &&
-    health.weekly > AUTO_SWITCH_THRESHOLD
+    effectiveW > AUTO_SWITCH_THRESHOLD
   ) {
     if (hoursUntilDailyReset() <= WAIT_RESET_HOURS) return true;
   }
   // Daily耗尽但即将重置 + 干旱模式 → 等重置
   if (
-    isWeeklyDrought() &&
+    (isWeeklyDrought() || health.weeklyUnknown) &&
     health.daily <= AUTO_SWITCH_THRESHOLD &&
     hoursUntilDailyReset() <= WAIT_RESET_HOURS
   )
@@ -900,9 +908,22 @@ class AccountStore {
     const rawW = _readQuota(u.weekly);
     const storedD = rawD != null ? rawD : checked ? 0 : -1;
     const storedW = rawW != null ? rawW : checked ? 0 : -1;
-    // 反者道之动: 快照是实时真相, acc.usage是历史兔底
+    // 反者道之动: 快照是实时真相, acc.usage是历史兜底
+    // v9.3: weekly=-1表示「W独立但API未返回field 15」→ 不信任, 用保守策略
     const dr = snap ? Math.max(0, Math.min(100, snap.daily)) : storedD;
-    const wr = snap ? Math.max(0, Math.min(100, snap.weekly)) : storedW;
+    let wr;
+    let weeklyUnknown = false;
+    if (snap) {
+      if (snap.weekly >= 0) {
+        wr = Math.max(0, Math.min(100, snap.weekly));
+      } else {
+        // weekly=-1: API未返回weekly字段 → 回退到存储值, 都没有则保守=daily
+        weeklyUnknown = true;
+        wr = storedW >= 0 ? storedW : dr >= 0 ? dr : 0;
+      }
+    } else {
+      wr = storedW;
+    }
     const plan = u.plan || (checked ? "Trial" : "");
     const planEnd = u.planEnd || 0;
     const resetTime = u.resetTime || 0;
@@ -932,6 +953,7 @@ class AccountStore {
       dailyResetIn,
       weeklyResetIn,
       hasSnap: !!snap,
+      weeklyUnknown,
     };
   }
 
@@ -945,8 +967,8 @@ class AccountStore {
       unchecked = 0;
     const drought = isWeeklyDrought();
     for (const a of this.accounts) {
-      if (!a.password) continue;
       pwCount++;
+      if (!a.password) continue;
       const h = this.getHealth(a);
       if (!h.checked) {
         unchecked++;
@@ -1064,14 +1086,33 @@ class AccountStore {
       const a = this.accounts[i];
       if (!a.password) continue;
       if (a._unverified) continue; // Claude可用性未验证 → 不参与切号
+      if (a.skipAutoSwitch) continue; // 用户手动锁定 → 自动切号不选此号
       if (skipInUse && this.isInUse(a.email)) continue;
       if (_isClaimedByOther(a.email)) continue; // 跨实例协调: 跳过被其他存活实例占用的账号
+      // v14.1: pool永久黑名单/临时拉黑 → 跳过 (根治all_channels_failed)
+      const ek = a.email.toLowerCase();
+      if (_tokenPoolBlacklist.has(ek)) continue;
+      const streak = _poolFailStreak.get(ek);
+      if (
+        streak &&
+        streak.count >= POOL_TEMP_BAN_THRESHOLD &&
+        Date.now() - streak.lastFail < POOL_TEMP_BAN_DURATION
+      )
+        continue;
       const h = this.getHealth(a);
       // Claude不可用(Free/试用过期) → 跳过
       if (!isClaudeAvailable(h)) continue;
 
-      if (drought) {
-        // ── 干旱模式: 只看Daily, 忽略Weekly(全池都是0) ──
+      // v14.1: token缓存加分 — 有弹药的号优先, 根治live-login失败
+      const cached = _tokenCache.get(ek);
+      const hasWarmToken = cached && cached.expiresAt > Date.now() + 60000; // 至少1min有效
+      const tokenBonus = hasWarmToken ? 500 : 0;
+      // pool连续失败降分 (未达拉黑阈值但有失败记录)
+      const failPenalty = streak && streak.count > 0 ? streak.count * 150 : 0;
+
+      // v9.3: weeklyUnknown时走干旱模式逻辑(只看daily)
+      if (drought || h.weeklyUnknown) {
+        // ── 干旱/W未知模式: 只看Daily ──
         if (h.daily <= 0 && hrsToDaily > 4) continue;
         let score = 0;
         score += h.daily * 15;
@@ -1080,6 +1121,7 @@ class AccountStore {
         if (h.daily > 50) score += 200;
         if (h.staleMin >= 0 && h.staleMin < 5) score += 30;
         else if (h.staleMin >= 0 && h.staleMin > 60) score += 60;
+        score += tokenBonus - failPenalty; // v14.1
         if (score > bestScore) {
           bestScore = score;
           bestI = i;
@@ -1101,6 +1143,7 @@ class AccountStore {
         if (h.staleMin >= 0 && h.staleMin < 5) score += 80;
         else if (h.staleMin >= 0 && h.staleMin < 30) score += 40;
         else if (h.staleMin < 0 || h.staleMin > 120) score -= 50;
+        score += tokenBonus - failPenalty; // v14.1
         if (score > bestScore) {
           bestScore = score;
           bestI = i;
@@ -1204,7 +1247,6 @@ function _httpsPost(url, body, opts = {}) {
         opts.rejectUnauthorized !== undefined ? opts.rejectUnauthorized : true,
       servername:
         opts.servername !== undefined ? opts.servername : parsed.hostname,
-      agent: false, // v10.0.4: 绕过全局proxy agent
     };
     const req = https.request(reqOpts, (res) => {
       let data = "";
@@ -1234,6 +1276,7 @@ function _httpsViaProxy(
   targetUrl,
   body,
   timeout = 12000,
+  extraHeaders = {},
 ) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
@@ -1245,8 +1288,7 @@ function _httpsViaProxy(
       port: proxyPort,
       method: "CONNECT",
       path: `${parsed.hostname}:443`,
-      timeout: 5000,
-      agent: false, // v10.0.4: 绕过全局proxy agent
+      timeout: 3000,
     });
     connReq.on("connect", (res, socket) => {
       if (res.statusCode !== 200) {
@@ -1266,11 +1308,11 @@ function _httpsViaProxy(
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(body),
             Host: parsed.hostname,
+            ...extraHeaders,
           },
           servername: parsed.hostname,
           rejectUnauthorized: false,
           timeout: timeout - 2000,
-          agent: false, // v10.0.4: 绕过全局proxy agent
         },
         (resp) => {
           let data = "";
@@ -1310,6 +1352,177 @@ function _httpsViaProxy(
   });
 }
 
+// ── 探测代理端口 (v10.0: CONNECT功能验证 + LAN代理自适应 — 杜绝假代理) ──
+let _proxyPortCache = null;
+let _proxyHostCache = PROXY_HOST; // v14.0: 跟踪验证通过的代理Host
+let _proxyPortCacheTs = 0;
+const PROXY_CACHE_TTL = 300000; // 5分钟 TTL
+const PROXY_FAIL_TTL = 30000; // 失败缓存30秒 (不反复锤死端口)
+let _proxyVerifyInProgress = false;
+
+// 功能验证: 不仅TCP连通, 还要CONNECT隧道能打通Google
+function _verifyProxyPort(host, port) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve(false);
+    }, 2000);
+    const connReq = http.request({
+      host,
+      port,
+      method: "CONNECT",
+      path: `${FIREBASE_HOST}:443`,
+      timeout: 1500,
+    });
+    connReq.on("connect", (res, socket) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(res.statusCode === 200);
+    });
+    connReq.on("error", () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+    connReq.on("timeout", () => {
+      connReq.destroy();
+      clearTimeout(timer);
+      resolve(false);
+    });
+    connReq.end();
+  });
+}
+
+// v14.0: 系统代理自适应 — 读取环境变量/VS Code配置, 不硬编码任何主机名/IP
+function _getSystemProxy() {
+  // 优先级: HTTPS_PROXY > HTTP_PROXY > ALL_PROXY > VS Code http.proxy
+  const envVars = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+  ];
+  for (const key of envVars) {
+    const val = process.env[key];
+    if (val) {
+      try {
+        const u = new URL(val);
+        const host = u.hostname;
+        const port = parseInt(u.port) || (u.protocol === "https:" ? 443 : 80);
+        if (host && port) return { host, port, source: `env:${key}` };
+      } catch {
+        const m = val.match(/^(?:https?:\/\/)?([^:\/]+):(\d+)/);
+        if (m)
+          return { host: m[1], port: parseInt(m[2]), source: `env:${key}` };
+      }
+    }
+  }
+  // VS Code 代理设置
+  try {
+    const vsProxy = vscode.workspace.getConfiguration("http").get("proxy", "");
+    if (vsProxy) {
+      try {
+        const u = new URL(vsProxy);
+        const host = u.hostname;
+        const port = parseInt(u.port) || 80;
+        if (host && port) return { host, port, source: "vscode" };
+      } catch {
+        const m = vsProxy.match(/^(?:https?:\/\/)?([^:\/]+):(\d+)/);
+        if (m) return { host: m[1], port: parseInt(m[2]), source: "vscode" };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function _detectProxy() {
+  const now = Date.now();
+  if (
+    _proxyPortCache !== null &&
+    now - _proxyPortCacheTs <
+      (_proxyPortCache > 0 ? PROXY_CACHE_TTL : PROXY_FAIL_TTL)
+  )
+    return Promise.resolve(_proxyPortCache);
+  if (_proxyVerifyInProgress) return Promise.resolve(_proxyPortCache || 0);
+  _proxyVerifyInProgress = true;
+  _proxyPortCache = null;
+
+  return new Promise(async (resolve) => {
+    // v14.0: 构建候选列表 — 系统代理优先 → 本地常见端口
+    const candidates = [];
+    const sysProxy = _getSystemProxy();
+    if (sysProxy) {
+      candidates.push({ host: sysProxy.host, port: sysProxy.port });
+      log(
+        `proxy: system proxy detected ${sysProxy.host}:${sysProxy.port} (${sysProxy.source})`,
+      );
+    }
+    for (const port of PROXY_PORTS) {
+      candidates.push({ host: PROXY_HOST, port });
+    }
+
+    // 并行TCP探测: 快速找到可连接的端口
+    const alive = [];
+    await new Promise((doneProbe) => {
+      let pending = candidates.length;
+      for (const { host, port } of candidates) {
+        const s = new net.Socket();
+        s.setTimeout(800);
+        s.connect(port, host, () => {
+          s.destroy();
+          alive.push({ host, port });
+          if (--pending === 0) doneProbe();
+        });
+        s.on("error", () => {
+          s.destroy();
+          if (--pending === 0) doneProbe();
+        });
+        s.on("timeout", () => {
+          s.destroy();
+          if (--pending === 0) doneProbe();
+        });
+      }
+    });
+    // v11: 并行CONNECT验证 — 所有alive端口同时验证, 第一个成功立即返回
+    // (旧版串行: N×3s=15s+ → 新版并行: max(2s)=2s)
+    if (alive.length > 0) {
+      try {
+        const winner = await Promise.any(
+          alive.map(({ host, port }) =>
+            _verifyProxyPort(host, port).then((ok) => {
+              if (!ok) throw new Error("verify_fail");
+              return { host, port };
+            }),
+          ),
+        );
+        _proxyPortCache = winner.port;
+        _proxyHostCache = winner.host;
+        _proxyPortCacheTs = Date.now();
+        _proxyVerifyInProgress = false;
+        if (winner.host !== PROXY_HOST)
+          log(`proxy: ${winner.host}:${winner.port} verified ✓`);
+        resolve(winner.port);
+        return;
+      } catch {
+        // all CONNECT verify failed
+      }
+    }
+    // 全部失败
+    _proxyPortCache = 0;
+    _proxyHostCache = PROXY_HOST;
+    _proxyPortCacheTs = Date.now();
+    _proxyVerifyInProgress = false;
+    resolve(0);
+  });
+}
+
+// 代理失效时强制刷新缓存 (被调用方在请求失败时调用)
+function _invalidateProxyCache() {
+  _proxyPortCache = null;
+  _proxyHostCache = PROXY_HOST;
+  _proxyPortCacheTs = 0;
+}
+
 // ── Raw HTTPS POST (返回Buffer, 用于protobuf二进制响应) ──
 function _httpsPostRaw(url, body, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -1329,7 +1542,6 @@ function _httpsPostRaw(url, body, opts = {}) {
       timeout: opts.timeout || 12000,
       rejectUnauthorized: false,
       servername: parsed.hostname,
-      agent: false, // v10.0.4: 绕过全局proxy agent
     };
     const req = https.request(reqOpts, (res) => {
       const chunks = [];
@@ -1365,8 +1577,7 @@ function _httpsPostRawViaProxy(
       port: proxyPort,
       method: "CONNECT",
       path: `${parsed.hostname}:443`,
-      timeout: 5000,
-      agent: false, // v10.0.4
+      timeout: 3000,
     });
     connReq.on("connect", (res, socket) => {
       if (res.statusCode !== 200) {
@@ -1377,7 +1588,7 @@ function _httpsPostRawViaProxy(
       }
       const req = https.request(
         {
-          socket, // 复用CONNECT隧道
+          socket,
           hostname: parsed.hostname,
           path: parsed.pathname + parsed.search,
           method: "POST",
@@ -1390,7 +1601,6 @@ function _httpsPostRawViaProxy(
           servername: parsed.hostname,
           rejectUnauthorized: false,
           timeout: timeout - 2000,
-          agent: false, // v10.0.4
         },
         (resp) => {
           const chunks = [];
@@ -1549,19 +1759,25 @@ function _extractQuotaFields(v, msgs) {
   const dailyVal =
     dailyR !== undefined && dailyR >= 0 && dailyR <= 100 ? dailyR : 0;
 
-  // Weekly修复: proto3零值省略 + API统一D/W
-  // 1. field 15存在且有效 → 直接使用
+  // Weekly修复 v9.3: proto3零值省略 + 真正区分「API统一D/W」与「W独立耗尽」
+  // 根因: 旧版无条件镜像daily→weekly, 导致W实际耗尽时UI仍显示有余量
+  // 1. field 15存在且有效 → 直接使用 (API明确告知weekly%)
   // 2. field 15缺失 + field 17===18(reset相同) → API已统一D/W, weekly镜像daily
-  // 3. field 15缺失 + daily>0 → weekly未知但账号活跃, 镜像daily(保守安全)
-  // 4. field 15缺失 + daily===0 → 账号可能真的耗尽, weekly=0
+  // 3. field 15缺失 + reset不同 → W独立于D, 返回-1(未知) 让上层安全处理
+  // 4. field 15缺失 + 无reset信息 + daily>0 → 保守镜像(兼容旧API)
+  // 5. field 15缺失 + daily===0 → 全部耗尽, weekly=0
   let weeklyVal;
   if (weeklyR !== undefined && weeklyR >= 0 && weeklyR <= 100) {
     weeklyVal = weeklyR;
   } else if (dReset && wReset && dReset === wReset) {
     // API返回相同的D/W重置时间 → D/W已统一, weekly不再独立限制
     weeklyVal = dailyVal;
-  } else if (dailyVal > 0) {
-    // daily有余量但weekly缺失 → 保守镜像daily
+  } else if (dReset && wReset && dReset !== wReset) {
+    // D/W重置时间不同 → weekly是独立维度, 缺失field 15不能镜像daily
+    // 返回-1表示未知, 上层用安全策略处理 (不误报有余量)
+    weeklyVal = -1;
+  } else if (dailyVal > 0 && !dReset && !wReset) {
+    // 无reset信息(旧API兼容) + daily有余量 → 保守镜像daily
     weeklyVal = dailyVal;
   } else {
     weeklyVal = 0;
@@ -1635,25 +1851,37 @@ function parsePlanStatus(buf) {
   // relay可能在自己的wrapper消息中有field 14/15(非D/W), 导致L2误读
   // 所以: 有wrapper(field 1)时, 优先解析内层(L3/L4), L2仅做fallback
 
-  // ── 层3/4: 优先解析wrapper内部 ──
+  // ── 层3/4: 优先解析wrapper内部 (v9.3: 强化验证 — 要求D/W+至少一个reset字段) ──
+  // 根因: relay wrapper自身的metadata字段可能恰好在field 14-15范围内, 导致误读
+  // 修复: L3/L4结果必须同时有field 14(daily)和field 17或18(reset时间)才接受
+  const _hasResetField = (v) =>
+    (v[17] && v[17] > 1700000000) || (v[18] && v[18] > 1700000000);
   if (top.messages[1] && top.messages[1].length > 10) {
     const inner = parseProtoFields(top.messages[1]);
     let result = _extractQuotaFields(inner.varints, inner.messages);
-    if (result) {
+    if (result && _hasResetField(inner.varints)) {
       log(
         `proto L3: D${result.daily} W${result.weekly}${result.planName ? " plan=" + result.planName : ""}${result.planEndUnix ? " end=" + new Date(result.planEndUnix * 1000).toISOString().slice(0, 10) : ""} env=${stripped} ${pb.length}B`,
       );
       return result;
+    } else if (result) {
+      log(
+        `proto L3: D${result.daily} W${result.weekly} REJECTED (no reset field — likely relay metadata)`,
+      );
     }
     // 层4: 再深一层
     if (inner.messages[1] && inner.messages[1].length > 10) {
       const deep = parseProtoFields(inner.messages[1]);
       result = _extractQuotaFields(deep.varints, deep.messages);
-      if (result) {
+      if (result && _hasResetField(deep.varints)) {
         log(
           `proto L4: D${result.daily} W${result.weekly}${result.planName ? " plan=" + result.planName : ""}${result.planEndUnix ? " end=" + new Date(result.planEndUnix * 1000).toISOString().slice(0, 10) : ""} env=${stripped} ${pb.length}B`,
         );
         return result;
+      } else if (result) {
+        log(
+          `proto L4: D${result.daily} W${result.weekly} REJECTED (no reset field — likely relay metadata)`,
+        );
       }
     }
   }
@@ -1681,12 +1909,17 @@ async function _firebaseVia(channel, email, password, key) {
 
   switch (channel) {
     case "direct":
-      return _httpsPost(url, payload, { timeout: 8000 });
+      return _httpsPost(url, payload, {
+        timeout: 8000,
+        headers: { Referer: FIREBASE_REFERER },
+      });
 
     case "proxy":
       return _detectProxy().then((port) => {
         if (!port) throw new Error("no_proxy");
-        return _httpsViaProxy(_getProxyHost(), port, url, payload, 10000);
+        return _httpsViaProxy(_proxyHostCache, port, url, payload, 10000, {
+          Referer: FIREBASE_REFERER,
+        });
       });
 
     default:
@@ -1694,212 +1927,99 @@ async function _firebaseVia(channel, email, password, key) {
   }
 }
 
-// ── v10.1.0: Firebase登录限流检查 ──
-function _firebaseLoginRateOK() {
-  const now = Date.now();
-  // 清理过期时间戳
-  while (
-    _firebaseLoginTimestamps.length > 0 &&
-    now - _firebaseLoginTimestamps[0] > FIREBASE_LOGIN_WINDOW
-  ) {
-    _firebaseLoginTimestamps.shift();
-  }
-  if (_firebaseLoginTimestamps.length >= FIREBASE_LOGIN_RPM) {
-    return false; // 达到限额
-  }
-  _firebaseLoginTimestamps.push(now);
-  return true;
-}
-
-// ── 多通道并行竞速 Firebase 登录 (v10.1.0: 单key精简·限流·quota冷却) ──
-async function firebaseLogin(email, password, { force = false } = {}) {
+// ── v11: 全并行竞速 Firebase 登录 — 天下之至柔，驰骋天下之至坚 ──
+// 旧版v10: for(key of KEYS){Promise.any([ch1,ch2])} 串行迭代key → 实测42s超时
+// v11: ALL keys×channels 同时发射, 第一个成功立即返回 → 实测1-3s, 最差10s
+async function firebaseLogin(email, password) {
   const channels = ["proxy", "direct"];
   const errors = {};
 
-  // v10.1.0: 全局登录限流 — 防止quota exhaustion
-  if (!force && !_firebaseLoginRateOK()) {
-    log(
-      `firebaseLogin: rate limited (${_firebaseLoginTimestamps.length}/${FIREBASE_LOGIN_RPM} in 60s)`,
-    );
-    return { ok: false, error: "login_rate_limited" };
-  }
-
+  // Phase 1: 全并行竞速 — 2keys × 2channels = 4个请求同时发射
+  const blastPromises = [];
   for (const key of FIREBASE_KEYS) {
     const keySuffix = key.slice(-4);
-
-    // v10.1.0: per-key quota冷却 — quota exceeded后跳过此key 90秒
-    const cooldown = _firebaseKeyQuotaCooldown.get(keySuffix);
-    if (!force && cooldown && Date.now() < cooldown.until) {
-      const remain = Math.round((cooldown.until - Date.now()) / 1000);
-      errors[`${keySuffix}`] = `quota_cooldown(${remain}s)`;
-      log(
-        `firebaseLogin: key ${keySuffix} in quota cooldown (${remain}s left)`,
+    for (const ch of channels) {
+      blastPromises.push(
+        _firebaseVia(ch, email, password, key)
+          .then((result) => {
+            if (result && result.idToken)
+              return {
+                ok: true,
+                idToken: result.idToken,
+                channel: `${ch}-${keySuffix}`,
+              };
+            const err = result?.error;
+            const msg = (typeof err === "object" ? err?.message : err) || "";
+            if (/INVALID|NOT_FOUND|DISABLED|WRONG/.test(msg))
+              return { ok: false, permanent: true, error: msg };
+            throw new Error(msg || "no_token");
+          })
+          .catch((e) => {
+            errors[`${ch}-${keySuffix}`] = e.message;
+            throw e;
+          }),
       );
-      continue;
     }
+  }
 
-    const racePromises = channels.map((ch) =>
-      _firebaseVia(ch, email, password, key)
-        .then((result) => {
-          if (result && result.idToken) {
-            _firebaseKeyQuotaCooldown.delete(keySuffix); // v10.1.1: 成功→清除cooldown streak
-            return {
-              ok: true,
-              idToken: result.idToken,
-              channel: `${ch}-${keySuffix}`,
-            };
-          }
-          const err = result?.error;
-          const msg = (typeof err === "object" ? err?.message : err) || "";
-          // v10.1.1: 检测quota exceeded / App Check → 指数退避冷却
-          if (/Quota exceeded|RESOURCE_EXHAUSTED/i.test(msg)) {
-            const prev = _firebaseKeyQuotaCooldown.get(keySuffix);
-            const streak = (prev?.streak || 0) + 1;
-            const coolMs = Math.min(
-              FIREBASE_QUOTA_COOLDOWN_MAX,
-              FIREBASE_QUOTA_COOLDOWN_BASE * Math.pow(2, streak - 1),
-            );
-            _firebaseKeyQuotaCooldown.set(keySuffix, {
-              until: Date.now() + coolMs,
-              streak,
-            });
-            log(
-              `firebaseLogin: key ${keySuffix} quota/appcheck → cooldown ${coolMs / 1000}s (streak=${streak})`,
-            );
-          }
-          if (/INVALID|NOT_FOUND|DISABLED|WRONG/.test(msg)) {
-            return { ok: false, permanent: true, error: msg };
-          }
-          throw new Error(msg || "no_token");
-        })
-        .catch((e) => {
-          // v10.1.1: catch中也检测quota exceeded / App Check — 指数退避
-          if (/Quota exceeded|RESOURCE_EXHAUSTED/i.test(e.message)) {
-            const prev = _firebaseKeyQuotaCooldown.get(keySuffix);
-            const streak = (prev?.streak || 0) + 1;
-            const coolMs = Math.min(
-              FIREBASE_QUOTA_COOLDOWN_MAX,
-              FIREBASE_QUOTA_COOLDOWN_BASE * Math.pow(2, streak - 1),
-            );
-            _firebaseKeyQuotaCooldown.set(keySuffix, {
-              until: Date.now() + coolMs,
-              streak,
-            });
-          }
-          errors[`${ch}-${keySuffix}`] = e.message;
-          throw e;
-        }),
+  try {
+    const result = await Promise.any(blastPromises);
+    if (result.ok) return result;
+    if (result.permanent)
+      return { ok: false, error: result.error, channel: "permanent" };
+  } catch (aggErr) {
+    const permanentErr = Object.values(errors).find((e) =>
+      /INVALID|NOT_FOUND|DISABLED|WRONG/.test(e),
     );
+    if (permanentErr)
+      return { ok: false, error: permanentErr, channel: "permanent" };
+  }
 
-    try {
-      const result = await Promise.any(racePromises);
-      if (result.ok) return result;
-      if (result.permanent)
-        return { ok: false, error: result.error, channel: "permanent" };
-    } catch (aggErr) {
-      const permanentErr = Object.values(errors).find((e) =>
-        /INVALID|NOT_FOUND|DISABLED|WRONG/.test(e),
+  // Phase 2: 刷新代理后全并行重试 (v11: 全keys×channels, 不再只retry单key)
+  _invalidateProxyCache();
+  const retryPromises = [];
+  for (const key of FIREBASE_KEYS) {
+    const keySuffix = key.slice(-4);
+    for (const ch of channels) {
+      retryPromises.push(
+        _firebaseVia(ch, email, password, key)
+          .then((r) => {
+            if (r && r.idToken)
+              return {
+                ok: true,
+                idToken: r.idToken,
+                channel: `retry-${ch}-${keySuffix}`,
+              };
+            throw new Error("no_token");
+          })
+          .catch((e) => {
+            errors[`retry-${ch}-${keySuffix}`] = e.message;
+            throw e;
+          }),
       );
-      if (permanentErr)
-        return { ok: false, error: permanentErr, channel: "permanent" };
     }
   }
-
-  // v10.1.0: 重试前检查是否所有key都在冷却中 — 如果是, 快速失败
-  const allKeysCooling = FIREBASE_KEYS.every((k) => {
-    const s = k.slice(-4);
-    const cd = _firebaseKeyQuotaCooldown.get(s);
-    return cd && Date.now() < cd.until;
-  });
-  if (!force && allKeysCooling) {
-    log("firebaseLogin: all keys in quota cooldown — fast fail");
-    _proxyPortCache = null;
-    return { ok: false, error: "all_keys_quota_cooldown" };
-  }
-
-  // 快速重试 — 重置代理缓存后并行竞速一次
-  _proxyPortCache = null;
-  const retryKey =
-    FIREBASE_KEYS.find((k) => {
-      const cd = _firebaseKeyQuotaCooldown.get(k.slice(-4));
-      return !cd || Date.now() >= cd.until;
-    }) || FIREBASE_KEYS[0];
-  const retryKeySuffix = retryKey.slice(-4);
-  const retryPromises = channels.map((ch) =>
-    _firebaseVia(ch, email, password, retryKey)
-      .then((r) => {
-        if (r && r.idToken)
-          return {
-            ok: true,
-            idToken: r.idToken,
-            channel: `retry-${ch}-${retryKeySuffix}`,
-          };
-        throw new Error("no_token");
-      })
-      .catch((e) => {
-        if (/Quota exceeded|RESOURCE_EXHAUSTED/i.test(e.message)) {
-          const prev = _firebaseKeyQuotaCooldown.get(retryKeySuffix);
-          const streak = (prev?.streak || 0) + 1;
-          const coolMs = Math.min(
-            FIREBASE_QUOTA_COOLDOWN_MAX,
-            FIREBASE_QUOTA_COOLDOWN_BASE * Math.pow(2, streak - 1),
-          );
-          _firebaseKeyQuotaCooldown.set(retryKeySuffix, {
-            until: Date.now() + coolMs,
-            streak,
-          });
-        }
-        errors[`retry-${ch}`] = e.message;
-        throw e;
-      }),
-  );
   try {
     const result = await Promise.any(retryPromises);
     if (result.ok) return result;
   } catch {}
 
-  // v10.1.0: 详细错误日志 + 代理诊断
-  const errSummary = Object.entries(errors)
-    .map(([k, v]) => `${k}:${v.substring(0, 80)}`)
-    .join(" | ");
-  log(
-    `firebaseLogin FAIL: proxyCache=${_proxyPortCache} proxyHost=${_proxyPortHostCache} cacheAge=${_proxyPortCacheTs ? Math.round((Date.now() - _proxyPortCacheTs) / 1000) + "s" : "none"} errors=[${errSummary}]`,
-  );
-  // 登录全败时清除代理缓存, 让下次重新探测
-  _proxyPortCache = null;
   return { ok: false, error: "all_channels_failed", details: errors };
 }
 
 // ── 获取缓存的idToken或重新登录 ──
-const TOKEN_GRACE_MS = 10 * 60000; // v10.1.0: 过期token宽限10分钟 (Firebase token实际有效60min, 我们缓存50min)
 async function getCachedToken(email, password) {
   const key = email.toLowerCase();
   const cached = _tokenCache.get(key);
   if (cached && cached.expiresAt > Date.now())
     return { ok: true, idToken: cached.idToken };
   const loginResult = await firebaseLogin(email, password);
-  if (!loginResult.ok) {
-    // v10.1.0: 瞬态失败(限流/冷却)时, 过期token如果在宽限期内仍可使用
-    const isTransient =
-      /rate_limited|quota_cooldown|all_keys_quota|Firebase App Check token is invalid|all_channels_failed/.test(
-        loginResult.error || "",
-      );
-    if (
-      isTransient &&
-      cached &&
-      cached.expiresAt + TOKEN_GRACE_MS > Date.now()
-    ) {
-      log(
-        `getCachedToken: login transient fail (${loginResult.error}), using grace-period token (${Math.round((Date.now() - cached.expiresAt) / 1000)}s past TTL)`,
-      );
-      return { ok: true, idToken: cached.idToken, _grace: true };
-    }
-    return loginResult;
-  }
+  if (!loginResult.ok) return loginResult;
   _tokenCache.set(key, {
     idToken: loginResult.idToken,
     expiresAt: Date.now() + TOKEN_CACHE_TTL,
   });
+  _tokenCacheDirty = true;
   return loginResult;
 }
 
@@ -1909,124 +2029,25 @@ const _quotaFetchCooldown = new Map(); // email → {nextAllowedTs}
 const QUOTA_MIN_INTERVAL = 10000; // 正常最小间隔10秒
 const QUOTA_429_BACKOFF = 60000; // 429后退避60秒
 
-// v10: 通用DNS解析引擎 — 系统DNS优先, DoH兜底, 彻底消除proxy循环依赖
-const _hostIPCache = new Map(); // hostname -> {ip, ts}
-const HOST_IP_TTL = 600000; // IP缓存10分钟
-// v7.2兼容保留
+// v7.2: DoH解析relay真实IP (绕过Clash fake-ip DNS返回127.0.0.1的问题)
 let _relayIPCache = { ip: null, ts: 0 };
-const RELAY_IP_TTL = 600000;
+const RELAY_IP_TTL = 600000; // IP缓存10分钟
 
-async function _resolveHostIP(hostname) {
-  const cached = _hostIPCache.get(hostname);
-  if (cached && Date.now() - cached.ts < HOST_IP_TTL) return cached.ip;
-
-  // 方法1: 系统DNS直接解析 (无需proxy, 最快最可靠)
-  try {
-    const ip = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error("sys_dns_timeout")),
-        5000,
-      );
-      dns.resolve4(hostname, (err, addresses) => {
-        clearTimeout(timer);
-        if (err || !addresses || addresses.length === 0)
-          reject(err || new Error("no_addr"));
-        else resolve(addresses[0]);
-      });
-    });
-    // 验证: 非回环/私网IP才接受 (Clash fake-ip返回198.18.x.x或127.0.0.1)
-    if (
-      ip &&
-      /^\d+\.\d+\.\d+\.\d+$/.test(ip) &&
-      !ip.startsWith("127.") &&
-      !ip.startsWith("198.18.") &&
-      !ip.startsWith("0.")
-    ) {
-      _hostIPCache.set(hostname, { ip, ts: Date.now() });
-      log(`dns: ${hostname} → ${ip} (system)`);
-      return ip;
-    }
-    log(`dns: ${hostname} → ${ip} (fake-ip detected, falling through)`);
-  } catch (e) {
-    log(`dns system: ${hostname} ${e.message}`);
-  }
-
-  // 方法2: DoH直连 (不经proxy, 直接访问Cloudflare/Google DNS)
-  const dohProviders = [
-    {
-      host: "1.1.1.1",
-      path: `/dns-query?name=${hostname}&type=A`,
-      headers: { Accept: "application/dns-json" },
-    },
-    { host: "8.8.8.8", path: `/resolve?name=${hostname}&type=A`, headers: {} },
-  ];
-  for (const doh of dohProviders) {
-    try {
-      const ip = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("doh_timeout")), 6000);
-        const req = https.request(
-          {
-            hostname: doh.host,
-            port: 443,
-            path: doh.path,
-            method: "GET",
-            headers: { ...doh.headers, Host: doh.host },
-            servername: doh.host,
-            rejectUnauthorized: false,
-            timeout: 5000,
-            agent: false, // v10.0.4: 绕过全局proxy agent
-          },
-          (resp) => {
-            let d = "";
-            resp.on("data", (c) => (d += c));
-            resp.on("end", () => {
-              clearTimeout(timer);
-              try {
-                const j = JSON.parse(d);
-                resolve(j.Answer ? j.Answer[0].data : null);
-              } catch {
-                resolve(null);
-              }
-            });
-          },
-        );
-        req.on("error", (e) => {
-          clearTimeout(timer);
-          reject(e);
-        });
-        req.end();
-      });
-      if (
-        ip &&
-        /^\d+\.\d+\.\d+\.\d+$/.test(ip) &&
-        !ip.startsWith("127.") &&
-        !ip.startsWith("198.18.")
-      ) {
-        _hostIPCache.set(hostname, { ip, ts: Date.now() });
-        log(`dns: ${hostname} → ${ip} (DoH-${doh.host})`);
-        return ip;
-      }
-    } catch (e) {
-      log(`dns DoH-${doh.host}: ${e.message}`);
-    }
-  }
-
-  // 方法3: DoH via proxy (原始方案, 最后手段)
+async function _resolveRelayIP() {
+  if (_relayIPCache.ip && Date.now() - _relayIPCache.ts < RELAY_IP_TTL)
+    return _relayIPCache.ip;
+  // 方法1: DoH via proxy (dns.google)
   try {
     const port = await _detectProxy();
     if (port) {
       const dohResult = await new Promise((resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error("doh_proxy_timeout")),
-          8000,
-        );
+        const timer = setTimeout(() => reject(new Error("doh_timeout")), 8000);
         const connReq = http.request({
-          host: _getProxyHost(),
+          host: _proxyHostCache,
           port,
           method: "CONNECT",
           path: "dns.google:443",
           timeout: 5000,
-          agent: false, // v10.0.4: 绕过全局proxy agent
         });
         connReq.on("connect", (res, socket) => {
           if (res.statusCode !== 200) {
@@ -2039,13 +2060,12 @@ async function _resolveHostIP(hostname) {
             {
               socket,
               hostname: "dns.google",
-              path: `/resolve?name=${hostname}&type=A`,
+              path: `/resolve?name=${RELAY_HOST}&type=A`,
               method: "GET",
               headers: { Host: "dns.google" },
               servername: "dns.google",
               rejectUnauthorized: false,
               timeout: 6000,
-              agent: false, // v10.0.4: 绕过全局proxy agent
             },
             (resp) => {
               let d = "";
@@ -2054,7 +2074,16 @@ async function _resolveHostIP(hostname) {
                 clearTimeout(timer);
                 try {
                   const j = JSON.parse(d);
-                  resolve(j.Answer ? j.Answer[0].data : null);
+                  // v9.3: 过滤A记录(type=1), 跳过CNAME(type=5)等
+                  if (j.Answer && Array.isArray(j.Answer)) {
+                    const aRecords = j.Answer.filter(
+                      (r) =>
+                        r.type === 1 && /^\d+\.\d+\.\d+\.\d+$/.test(r.data),
+                    );
+                    resolve(aRecords.length > 0 ? aRecords[0].data : null);
+                  } else {
+                    resolve(null);
+                  }
                 } catch {
                   resolve(null);
                 }
@@ -2071,53 +2100,86 @@ async function _resolveHostIP(hostname) {
           clearTimeout(timer);
           reject(e);
         });
-        connReq.on("timeout", () => {
-          clearTimeout(timer);
-          connReq.destroy();
-          reject(new Error("proxy_conn_timeout"));
-        });
         connReq.end();
       });
-      if (dohResult && /^\d+\.\d+\.\d+\.\d+$/.test(dohResult)) {
-        _hostIPCache.set(hostname, { ip: dohResult, ts: Date.now() });
-        log(`dns: ${hostname} → ${dohResult} (DoH-proxy)`);
-        return dohResult;
+      // v9.3: 正确处理CNAME链+多A记录 — 筛选真正的IPv4 A记录
+      const resolvedIP = (() => {
+        if (!dohResult) return null;
+        // 如果直接返回的就是IP, 用它
+        if (
+          typeof dohResult === "string" &&
+          /^\d+\.\d+\.\d+\.\d+$/.test(dohResult)
+        )
+          return dohResult;
+        return null;
+      })();
+      if (resolvedIP) {
+        _relayIPCache = { ip: resolvedIP, ts: Date.now() };
+        log(`relay IP resolved via DoH: ${resolvedIP}`);
+        return resolvedIP;
       }
     }
   } catch (e) {
-    log(`dns proxy: ${e.message}`);
+    log(`DoH resolve err: ${e.message}`);
   }
-
-  // 返回过期缓存总比没有好
-  const stale = _hostIPCache.get(hostname);
-  return stale ? stale.ip : null;
-}
-
-async function _resolveRelayIP() {
-  const ip = await _resolveHostIP(RELAY_HOST);
-  if (ip) _relayIPCache = { ip, ts: Date.now() };
-  return ip || _relayIPCache.ip;
-}
-
-// v10: 全局限流协调 — 跨实例文件锁, 防止多WAM实例轰炸API
-function _globalRateCheck() {
+  // v14.0: Cloudflare DoH备用 (1.1.1.1 — 不依赖代理, 直连)
   try {
-    const now = Date.now();
-    let data = { timestamps: [] };
-    try {
-      data = JSON.parse(fs.readFileSync(GLOBAL_RATE_FILE, "utf8"));
-    } catch {}
-    // 清除过期时间戳
-    data.timestamps = (data.timestamps || []).filter(
-      (ts) => now - ts < GLOBAL_RATE_WINDOW,
-    );
-    if (data.timestamps.length >= GLOBAL_RATE_MAX) return false; // 限流
-    data.timestamps.push(now);
-    fs.writeFileSync(GLOBAL_RATE_FILE, JSON.stringify(data), "utf8");
-    return true;
-  } catch {
-    return true;
-  } // 文件锁失败不阻塞
+    const cfResult = await new Promise((cfResolve, cfReject) => {
+      const timer = setTimeout(
+        () => cfReject(new Error("cf_doh_timeout")),
+        6000,
+      );
+      const req = https.request(
+        {
+          hostname: "1.1.1.1",
+          path: `/dns-query?name=${RELAY_HOST}&type=A`,
+          method: "GET",
+          headers: {
+            Accept: "application/dns-json",
+            Host: "cloudflare-dns.com",
+          },
+          timeout: 5000,
+          rejectUnauthorized: false,
+        },
+        (resp) => {
+          let d = "";
+          resp.on("data", (c) => (d += c));
+          resp.on("end", () => {
+            clearTimeout(timer);
+            try {
+              const j = JSON.parse(d);
+              if (j.Answer && Array.isArray(j.Answer)) {
+                const aRec = j.Answer.filter(
+                  (r) => r.type === 1 && /^\d+\.\d+\.\d+\.\d+$/.test(r.data),
+                );
+                cfResolve(aRec.length > 0 ? aRec[0].data : null);
+              } else cfResolve(null);
+            } catch {
+              cfResolve(null);
+            }
+          });
+        },
+      );
+      req.on("error", (e) => {
+        clearTimeout(timer);
+        cfReject(e);
+      });
+      req.on("timeout", () => {
+        req.destroy();
+        clearTimeout(timer);
+        cfReject(new Error("cf_timeout"));
+      });
+      req.end();
+    });
+    if (cfResult && /^\d+\.\d+\.\d+\.\d+$/.test(cfResult)) {
+      _relayIPCache = { ip: cfResult, ts: Date.now() };
+      log(`relay IP resolved via Cloudflare DoH: ${cfResult}`);
+      return cfResult;
+    }
+  } catch (e) {
+    log(`Cloudflare DoH err: ${e.message}`);
+  }
+  return _relayIPCache.ip; // 返回过期缓存总比没有好
 }
 
 async function fetchAccountQuota(email, password) {
@@ -2125,17 +2187,6 @@ async function fetchAccountQuota(email, password) {
   const now = Date.now();
   const cd = _quotaFetchCooldown.get(key);
   if (cd && now < cd.nextAllowedTs) {
-    // v10: 限流时返回缓存数据而非空
-    const cached = _quotaSnapshots.get(key);
-    if (cached)
-      return {
-        ok: true,
-        email,
-        channel: "cache",
-        daily: cached.daily,
-        weekly: cached.weekly,
-        _cached: true,
-      };
     return {
       ok: false,
       error: "rate_limited",
@@ -2144,173 +2195,104 @@ async function fetchAccountQuota(email, password) {
   }
   _quotaFetchCooldown.set(key, { nextAllowedTs: now + QUOTA_MIN_INTERVAL });
 
-  // v10: 全局限流检查
-  if (!_globalRateCheck()) {
-    const cached = _quotaSnapshots.get(key);
-    if (cached)
-      return {
-        ok: true,
-        email,
-        channel: "cache_global",
-        daily: cached.daily,
-        weekly: cached.weekly,
-        _cached: true,
-      };
-    return { ok: false, error: "global_rate_limited" };
-  }
-
   const loginResult = await getCachedToken(email, password);
   if (!loginResult.ok) {
     _tokenCache.delete(key);
     return { ok: false, error: loginResult.error };
   }
   const proto = encodeProtoString(loginResult.idToken);
-  const relayUrl = `https://${RELAY_HOST}/windsurf/plan-status`;
+  const planUrl = `https://${RELAY_HOST}/windsurf/plan-status`;
 
-  // v10: 5通道竞速 — 官方直连优先, 中继兜底
-  // 通道优先级: 官方API直连(proxy) > 官方API直连(direct) > Relay直连IP > Relay(proxy)
+  // v14.0: 4通道竞速 — 官方API直连优先, 中继兗底 (根治relay单点故障)
+  // 优先级: 官方直连(proxy) > 官方直连(direct) > Relay直连IP > Relay(proxy)
   const channels = [
-    // 通道1: 官方API直连 via proxy (最可靠: 官方服务器不限流)
-    {
-      name: "official-proxy",
-      fn: async () => {
-        const port = await _detectProxy();
-        if (!port) throw new Error("no_proxy");
-        // 尝试所有官方端点
-        for (const url of OFFICIAL_PLAN_STATUS_URLS) {
-          try {
-            const resp = await _httpsPostRawViaProxy(
-              _getProxyHost(),
-              port,
-              url,
-              proto,
-              10000,
-            );
-            if (resp.status === 200 && resp.buf && resp.buf.length > 20)
-              return resp;
-          } catch {}
-        }
-        throw new Error("all_official_proxy_failed");
-      },
+    // 通道1: 官方API via proxy (最可靠: 官方服务器不限流WAM)
+    async () => {
+      const port = await _detectProxy();
+      if (!port) throw new Error("no_proxy");
+      for (const url of OFFICIAL_PLAN_STATUS_URLS) {
+        try {
+          const resp = await _httpsPostRawViaProxy(
+            _proxyHostCache,
+            port,
+            url,
+            proto,
+            10000,
+          );
+          if (resp.status === 200 && resp.buf && resp.buf.length > 20)
+            return resp;
+        } catch {}
+      }
+      throw new Error("all_official_proxy_failed");
     },
-    // 通道2: 官方API直连 (无proxy, 适合无代理用户 — 需要能直连Google Cloud)
-    {
-      name: "official-direct",
-      fn: async () => {
-        for (const url of OFFICIAL_PLAN_STATUS_URLS) {
-          try {
-            const resp = await _httpsPostRaw(url, proto, { timeout: 10000 });
-            if (resp.status === 200 && resp.buf && resp.buf.length > 20)
-              return resp;
-          } catch {}
-        }
-        throw new Error("all_official_direct_failed");
-      },
+    // 通道2: 官方API直连 (无proxy, 适合可直连Google Cloud的网络)
+    async () => {
+      for (const url of OFFICIAL_PLAN_STATUS_URLS) {
+        try {
+          const resp = await _httpsPostRaw(url, proto, { timeout: 10000 });
+          if (resp.status === 200 && resp.buf && resp.buf.length > 20)
+            return resp;
+        } catch {}
+      }
+      throw new Error("all_official_direct_failed");
     },
     // 通道3: Relay直连真实IP (DoH解析绕过fake-ip)
-    {
-      name: "relay-direct",
-      fn: async () => {
-        const ip = await _resolveRelayIP();
-        if (!ip) throw new Error("no_relay_ip");
-        return _httpsPostRaw(relayUrl, proto, { timeout: 12000, hostname: ip });
-      },
+    async () => {
+      const ip = await _resolveRelayIP();
+      if (!ip) throw new Error("no_relay_ip");
+      return _httpsPostRaw(planUrl, proto, { timeout: 12000, hostname: ip });
     },
     // 通道4: Relay via proxy (最后手段)
-    {
-      name: "relay-proxy",
-      fn: async () => {
-        const port = await _detectProxy();
-        if (!port) throw new Error("no_proxy");
-        return _httpsPostRawViaProxy(
-          _getProxyHost(),
-          port,
-          relayUrl,
-          proto,
-          10000,
-        );
-      },
+    async () => {
+      const port = await _detectProxy();
+      if (!port) throw new Error("no_proxy");
+      return _httpsPostRawViaProxy(
+        _proxyHostCache,
+        port,
+        planUrl,
+        proto,
+        10000,
+      );
     },
   ];
 
   log(`quota: ${channels.length}ch for ${email.substring(0, 15)}`);
-
-  // v10: 并行竞速 — 同时启动所有通道, 第一个成功即返回
-  const racePromises = channels.map((ch) =>
-    ch
-      .fn()
+  // v13.4: 并行竞速 — 天下之至柔驰骋天下之至坚, 先到者胜
+  const racePromises = channels.map((chFn, i) => {
+    const chName = `ch${i + 1}`;
+    return chFn()
       .then((resp) => {
-        if (resp.status === 429) throw new Error(`429_${ch.name}`);
-        if (resp.status === 200 && resp.buf && resp.buf.length > 20) {
-          const q = parsePlanStatus(resp.buf);
-          if (q) return { channel: ch.name, quota: q };
+        if (resp.status === 429) {
+          _quotaFetchCooldown.set(key, {
+            nextAllowedTs: Date.now() + QUOTA_429_BACKOFF,
+          });
+          log(`${chName}: 429 → backoff ${QUOTA_429_BACKOFF / 1000}s`);
+          throw new Error("429");
         }
-        throw new Error(`parse_fail_${ch.name}`);
+        if (resp.status === 200 && resp.buf && resp.buf.length > 50) {
+          const q = parsePlanStatus(resp.buf);
+          if (q) {
+            _updateAccountUsage(email, q);
+            log(
+              `${chName}: OK D${q.daily} W${q.weekly}${q.planName ? " " + q.planName : ""}`,
+            );
+            return { ok: true, email, channel: chName, ...q };
+          }
+          log(`${chName}: parse fail ${resp.buf.length}B`);
+        } else {
+          log(`${chName}: status=${resp.status} len=${resp.buf?.length || 0}`);
+        }
+        throw new Error(`${chName}_no_data`);
       })
       .catch((e) => {
+        log(`${chName}: ${e.message}`);
+        if (i === channels.length - 1) _invalidateProxyCache();
         throw e;
-      }),
-  );
-
-  try {
-    const result = await Promise.any(racePromises);
-    _updateAccountUsage(email, result.quota);
-    log(
-      `${result.channel}: OK D${result.quota.daily} W${result.quota.weekly}${result.quota.planName ? " " + result.quota.planName : ""}`,
-    );
-    return { ok: true, email, channel: result.channel, ...result.quota };
-  } catch (aggErr) {
-    // v10: 所有通道失败 → 429退避 + 缓存降级
-    const has429 = aggErr.errors?.some((e) => e.message?.startsWith("429_"));
-    if (has429) {
-      _quotaFetchCooldown.set(key, {
-        nextAllowedTs: Date.now() + QUOTA_429_BACKOFF,
       });
-      log(`quota: all 429 → backoff ${QUOTA_429_BACKOFF / 1000}s`);
-    }
-    // v10: 缓存降级 — 返回上次已知额度, 不让UI显示0
-    const cached = _quotaSnapshots.get(key);
-    if (cached && cached.daily !== undefined) {
-      log(
-        `quota: all channels failed → using cached D${cached.daily} W${cached.weekly}`,
-      );
-      return {
-        ok: true,
-        email,
-        channel: "cache_degraded",
-        daily: cached.daily,
-        weekly: cached.weekly,
-        _cached: true,
-      };
-    }
-    // 从acc.usage恢复 (磁盘持久化数据)
-    if (_store) {
-      const acc = _store.accounts.find((a) => a.email.toLowerCase() === key);
-      if (acc && acc.usage) {
-        const rd = (f) =>
-          f == null
-            ? -1
-            : typeof f === "number"
-              ? f
-              : f && f.remaining != null
-                ? f.remaining
-                : -1;
-        const d = rd(acc.usage.daily),
-          w = rd(acc.usage.weekly);
-        if (d >= 0 && w >= 0) {
-          log(`quota: all channels failed → using stored D${d} W${w}`);
-          return {
-            ok: true,
-            email,
-            channel: "stored_degraded",
-            daily: d,
-            weekly: w,
-            _cached: true,
-          };
-        }
-      }
-    }
-    log(`quota: all channels failed, no cache available`);
+  });
+  try {
+    return await Promise.any(racePromises);
+  } catch {
     return { ok: false, error: "quota_fetch_failed" };
   }
 }
@@ -2337,14 +2319,23 @@ function _updateAccountUsage(email, quota) {
   const effectiveWeeklyReset =
     apiWeeklyReset || calcWeeklyReset || prev.weeklyReset || 0;
 
+  // v9.3: weekly=-1(未知)时不覆盖, 保留历史值
+  const effectiveWeekly =
+    quota.weekly >= 0
+      ? quota.weekly
+      : prev.weekly && typeof prev.weekly === "object"
+        ? prev.weekly.remaining
+        : typeof prev.weekly === "number"
+          ? prev.weekly
+          : 0;
   acc.usage = {
     daily: { remaining: quota.daily },
-    weekly: { remaining: quota.weekly },
+    weekly: { remaining: effectiveWeekly },
     plan: quota.planName || prev.plan || "Trial",
     // 道法自然: planEnd过期但仍有配额(D>0或W>0) → 不存储过期planEnd, 避免误标"已过期"
     planEnd: (() => {
       const pe = quota.planEndUnix ? quota.planEndUnix * 1000 : 0;
-      if (pe > 0 && pe < Date.now() && (quota.daily > 0 || quota.weekly > 0))
+      if (pe > 0 && pe < Date.now() && (quota.daily > 0 || effectiveWeekly > 0))
         return 0; // 宽限期: 清除过期planEnd
       return pe || prev.planEnd || 0;
     })(),
@@ -2355,140 +2346,143 @@ function _updateAccountUsage(email, quota) {
     // 额外追踪: credits数据 + 有效配额
     creditsUsed: quota.creditsUsed || prev.creditsUsed || 0,
     creditsTotal: quota.creditsTotal || prev.creditsTotal || 100,
-    effective: Math.min(quota.daily, quota.weekly),
+    effective: Math.min(quota.daily, effectiveWeekly),
   };
 }
 
-// ── Token注入 (v9.1 — 五感模式: 纯热替换·绝不logout·绝不中断对话·绝不杀agent) ──
-// 根因修复: v8.0的Phase2 degraded path调用windsurf.logout是"切号退出登录+agent中断"的唯一根源
-// 道法自然: provideAuthTokenToAuthProvider本身就是原子替换, 无需先登出
-// 五感原则: 失败则优雅降级, 绝不破坏现有会话 — 保持当前号继续运行远比强行切号重要
+// ── v14.2: 统一命令注入 — 万法归宗·根治hung promise ──
+// v13.6根因: p3仅在code:0时触发 → p1+p2都timeout时无重试 → 白白失败
+// v14.2修复: p3无条件触发·发新命令(不复用hung promise)·连续失败重置命令缓存
+// 实测数据: 快速成功0.7-2.4s(>60%) | 慢速p3恢复4-8s | 总超时14s
 async function injectAuth(idToken) {
-  const cmd = "windsurf.provideAuthTokenToAuthProvider";
-  const TIMEOUTS = [15000, 18000, 22000]; // v10.0.6: 3次尝试(4th极少成功), 逐步放宽超时
-  const BACKOFFS = [0, 1000, 2500]; // v10.0.6: 退避加大: 0→1→2.5s, 给Windsurf更多settle时间
+  // v14.2: 连续失败3次 → 重置命令缓存, 允许Phase 4尝试备选命令
+  if (_consecutiveInjectFails >= 3 && _workingInjectCmd) {
+    log(`inject: ⚠️ ${_consecutiveInjectFails}次连续失败 → 重置命令缓存 (was: ${_workingInjectCmd})`);
+    _workingInjectCmd = null;
+  }
+  const cmd = _workingInjectCmd || INJECT_COMMANDS[0];
+  const t0 = Date.now();
+  let gotCode0 = false;
 
-  let consecutiveCodeZero = 0; // v10.0.5: 连续code:0计数 — 智能快速退出
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Phase 1: 发射唯一命令, 3s快探 (温热时直接命中)
+  log(`inject: p1 [+${Date.now() - t0}ms]`);
+  const cmdP = vscode.commands.executeCommand(cmd, idToken);
+  try {
+    const r1 = await Promise.race([
+      cmdP,
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error("p1_timeout")), 3000),
+      ),
+    ]);
+    const ex1 = _extractInjectResult(r1);
+    if (ex1) {
+      _workingInjectCmd = cmd;
+      log(`inject: OK p1 [${Date.now() - t0}ms]`);
+      _lastSwitchTime = Date.now();
+      _lastInjectFail = 0;
+      _consecutiveInjectFails = 0;
+      return ex1;
+    }
+    if (r1?.error?.code === 0) {
+      gotCode0 = true;
+      log(`inject: p1 code:0 [${Date.now() - t0}ms]`);
+    } else {
+      log(`inject: p1 unexpected [${Date.now() - t0}ms]`);
+    }
+  } catch {
+    log(`inject: p1 3s超时 [${Date.now() - t0}ms]`);
+  }
+
+  // Phase 2: 复用p1命令(不发新命令!), 再等4s收割 (仅在p1 timeout时有意义)
+  if (!gotCode0) {
     try {
-      if (BACKOFFS[attempt - 1] > 0) {
-        log(
-          `inject: backoff ${BACKOFFS[attempt - 1]}ms before attempt ${attempt}`,
-        );
-        await new Promise((r) => setTimeout(r, BACKOFFS[attempt - 1]));
-      }
-      log(`inject: hot-swap attempt ${attempt}/3 (no-logout·五感模式)`);
-      const timeout = TIMEOUTS[attempt - 1];
-      const result = await Promise.race([
-        vscode.commands.executeCommand(cmd, idToken),
+      const r2 = await Promise.race([
+        cmdP, // 同一个Promise — 不重叠, 不混乱
         new Promise((_, rej) =>
-          setTimeout(
-            () => rej(new Error(`注入超时${timeout / 1000}s`)),
-            timeout,
-          ),
+          setTimeout(() => rej(new Error("p2_timeout")), 4000),
         ),
       ]);
-      const extracted = _extractInjectResult(result);
-      if (extracted) {
-        log(`inject: hot-swap OK on attempt ${attempt}`);
+      const ex2 = _extractInjectResult(r2);
+      if (ex2) {
+        _workingInjectCmd = cmd;
+        log(`inject: OK p2 [${Date.now() - t0}ms]`);
         _lastSwitchTime = Date.now();
-        return extracted;
+        _lastInjectFail = 0;
+        _consecutiveInjectFails = 0;
+        return ex2;
       }
-      if (result && result.error) {
-        const errStr = JSON.stringify(result.error);
-        log(`inject: attempt ${attempt} error: ${errStr}`);
-        // v10.0.6: code:0连续2次 → Windsurf内部拒绝, 快速退出(从3次降为2次)
-        if (result.error?.code === 0) consecutiveCodeZero++;
-        if (consecutiveCodeZero >= 2 && attempt < 3) {
-          log(
-            `inject: code:0 ×${consecutiveCodeZero} — skipping remaining attempts`,
-          );
-          break;
-        }
+      if (r2?.error?.code === 0) {
+        gotCode0 = true;
+        log(`inject: p2 code:0 [${Date.now() - t0}ms]`);
       } else {
-        log(
-          `inject: attempt ${attempt} unexpected: ${JSON.stringify(result || null).substring(0, 200)}`,
-        );
+        log(`inject: p2 unexpected [${Date.now() - t0}ms]`);
       }
-    } catch (e) {
-      log(`inject: attempt ${attempt} threw: ${e.message}`);
-    }
-  }
-  // 五感模式: 全败也绝不logout — 保持现有会话不受干扰, agent继续运行
-  log(
-    "inject: all hot-swap attempts failed — 五感模式: 保持现有会话, 不logout, 不中断agent",
-  );
-  return {
-    ok: false,
-    error: "inject failed (五感模式: 已保留现有会话)",
-  };
-}
-
-// ── v10.0.5: 更新preferredAccount — 道法自然填补handleAuthToken的空缺 ──
-// Windsurf v1.110.1 handleAuthToken只创建session, 不调updateAccountPreference
-// 导致codeium.windsurf-windsurf_auth仍是旧账号, Cascade agent继续用旧apiKey
-// 修复: 注入成功后直接写state.vscdb完成首选账号同步
-function _syncPreferredAccount(accountLabel) {
-  if (!accountLabel || accountLabel === "?") return;
-  try {
-    const dbPath = path.join(
-      process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
-      "Windsurf",
-      "User",
-      "globalStorage",
-      "state.vscdb",
-    );
-    if (!fs.existsSync(dbPath)) {
-      log(`syncPref: state.vscdb not found`);
-      return;
-    }
-    // 使用sqlite3原生模块 (Windsurf/VSCode内置)
-    let sqlite3;
-    try {
-      sqlite3 = require("@vscode/sqlite3");
     } catch {
-      log(`syncPref: @vscode/sqlite3 not available, skipping`);
-      return;
+      log(`inject: p2 5.5s超时 [${Date.now() - t0}ms]`);
     }
-    const db = new sqlite3.Database(dbPath, (err) => {
-      if (err) {
-        log(`syncPref: open error: ${err.message}`);
-        return;
-      }
-      const key = "codeium.windsurf-windsurf_auth";
-      db.get(
-        "SELECT value FROM ItemTable WHERE key = ?",
-        [key],
-        (err2, row) => {
-          if (err2) {
-            log(`syncPref: read error: ${err2.message}`);
-            db.close();
-            return;
-          }
-          if (row && row.value === accountLabel) {
-            log(`syncPref: already ${accountLabel}`);
-            db.close();
-            return;
-          }
-          const oldVal = row?.value || "(none)";
-          db.run(
-            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
-            [key, accountLabel],
-            (err3) => {
-              if (err3) {
-                log(`syncPref: write error: ${err3.message}`);
-              } else {
-                log(`syncPref: ${oldVal} \u2192 ${accountLabel}`);
-              }
-              db.close();
-            },
-          );
-        },
-      );
-    });
-  } catch (e) {
-    log(`syncPref error: ${e.message}`);
   }
+
+  // Phase 3 (v14.2): 无条件重试 — 无论code:0还是超时, 等2s后发新命令
+  // 根因: cmdP可能永远hang住(auth provider未响应), 必须发新命令逃逸hung promise
+  await new Promise((r) => setTimeout(r, 2000));
+  log(`inject: p3 retry${gotCode0 ? " (code:0)" : " (timeout)"} [+${Date.now() - t0}ms]`);
+  const retryP = vscode.commands.executeCommand(cmd, idToken);
+  try {
+    const r3 = await Promise.race([
+      retryP,
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error("p3_timeout")), 5000),
+      ),
+    ]);
+    const ex3 = _extractInjectResult(r3);
+    if (ex3) {
+      _workingInjectCmd = cmd;
+      log(`inject: OK p3 [${Date.now() - t0}ms]`);
+      _lastSwitchTime = Date.now();
+      _lastInjectFail = 0;
+      _consecutiveInjectFails = 0;
+      return ex3;
+    }
+    if (r3?.error?.code === 0) {
+      log(`inject: p3 code:0 [${Date.now() - t0}ms] — 再次拒绝`);
+    }
+  } catch {
+    log(`inject: p3 timeout [${Date.now() - t0}ms]`);
+  }
+
+  // Phase 4 (v14.2): 备选命令 — 连续失败3次或未确认命令时, 尝试所有备选
+  if (!_workingInjectCmd || _consecutiveInjectFails >= 2) {
+    for (const altCmd of INJECT_COMMANDS) {
+      if (altCmd === cmd) continue;
+      log(`inject: p4 trying ${altCmd} [+${Date.now() - t0}ms]`);
+      try {
+        const altP = vscode.commands.executeCommand(altCmd, idToken);
+        const r4 = await Promise.race([
+          altP,
+          new Promise((_, rej) =>
+            setTimeout(() => rej(new Error("p4_timeout")), 5000),
+          ),
+        ]);
+        const ex4 = _extractInjectResult(r4);
+        if (ex4) {
+          _workingInjectCmd = altCmd;
+          log(`inject: OK p4 ${altCmd} [${Date.now() - t0}ms]`);
+          _lastSwitchTime = Date.now();
+          _lastInjectFail = 0;
+          _consecutiveInjectFails = 0;
+          return ex4;
+        }
+      } catch {
+        log(`inject: p4 ${altCmd} failed [${Date.now() - t0}ms]`);
+      }
+    }
+  }
+
+  _consecutiveInjectFails++;
+  log(
+    `inject: failed [${Date.now() - t0}ms] (×${_consecutiveInjectFails}) — 五感模式: 保持现有会话, 不logout`,
+  );
+  return { ok: false, error: "inject failed (五感模式: 已保留现有会话)" };
 }
 
 // 提取注入结果的通用辅助 (避免重复代码)
@@ -2520,7 +2514,10 @@ async function firebaseLookup(idToken) {
   for (const key of FIREBASE_KEYS) {
     const url = `https://${FIREBASE_HOST}/v1/accounts:lookup?key=${key}`;
     try {
-      const result = await _httpsPost(url, payload, { timeout: 8000 });
+      const result = await _httpsPost(url, payload, {
+        timeout: 8000,
+        headers: { Referer: FIREBASE_REFERER },
+      });
       if (result?.users?.[0]) return result.users[0];
     } catch {}
     // 也尝试代理通道
@@ -2529,11 +2526,12 @@ async function firebaseLookup(idToken) {
       if (port) {
         const url2 = `https://${FIREBASE_HOST}/v1/accounts:lookup?key=${key}`;
         const result = await _httpsViaProxy(
-          _getProxyHost(),
+          _proxyHostCache,
           port,
           url2,
           payload,
           10000,
+          { Referer: FIREBASE_REFERER },
         );
         if (result?.users?.[0]) return result.users[0];
       }
@@ -2788,7 +2786,6 @@ function _archivePurged(store, archived) {
 async function switchToAccount(email, password) {
   log(`switch: ${email}`);
   const t0 = Date.now();
-  _lastSwitchAttemptTime = t0; // v10.0.6: 记录尝试时间(含失败), 防止3s循环重试
 
   // ── 快速路径: 检查预热Token缓存 (道法自然: 弹药已备好, 一触即发) ──
   let idToken = null;
@@ -2814,13 +2811,19 @@ async function switchToAccount(email, password) {
     }
   }
 
-  // ── 兜底路径: Firebase登录 (force=true: 用户切号不受cooldown限制) ──
+  // ── 兜底路径: Firebase登录 ──
   if (!idToken) {
-    const loginResult = await firebaseLogin(email, password, { force: true });
+    const loginResult = await firebaseLogin(email, password);
     if (!loginResult.ok) {
       const err = loginResult.error || "";
       log(`switch FAIL login: ${err} [${Date.now() - t0}ms]`);
-      _tokenCache.delete(emailKey); // v10.0.5: 登录失败也清token缓存
+      // v14.1: 登录失败反馈到poolFailStreak → getBestIndex自动避开此号
+      if (/all_channels_failed/.test(err)) {
+        const fs0 = _poolFailStreak.get(emailKey) || { count: 0, lastFail: 0 };
+        fs0.count++;
+        fs0.lastFail = Date.now();
+        _poolFailStreak.set(emailKey, fs0);
+      }
       if (/INVALID|NOT_FOUND|DISABLED|WRONG/.test(err)) {
         const idx = _store?.accounts.findIndex(
           (a) => a.email.toLowerCase() === emailKey,
@@ -2853,6 +2856,8 @@ async function switchToAccount(email, password) {
       idToken,
       expiresAt: Date.now() + TOKEN_CACHE_TTL,
     });
+    _tokenCacheDirty = true;
+    _saveTokenCache();
     log(
       `switch: login OK via ${loginResult.channel} (${idToken.length}ch) [${Date.now() - t0}ms]`,
     );
@@ -2863,8 +2868,8 @@ async function switchToAccount(email, password) {
   const ms = Date.now() - t0;
   if (!injectResult.ok) {
     log(`switch FAIL inject: ${JSON.stringify(injectResult.error)} [${ms}ms]`);
-    // 注入失败可能是token过期, 清除缓存让下次重新登录
-    _tokenCache.delete(emailKey);
+    // v14.2: 注入失败不清除token缓存 — token有效, 是auth provider忙
+    // 仅当token确实过期(>50min)时自然淘汰, 避免无谓重新登录
     return {
       ok: false,
       error: `注入失败: ${JSON.stringify(injectResult.error)}`,
@@ -2876,8 +2881,6 @@ async function switchToAccount(email, password) {
   );
   _lastSwitchTime = Date.now();
   _writeInstanceClaim(email);
-  // v10.0.5: 同步preferredAccount — 填补handleAuthToken的空缺
-  _syncPreferredAccount(injectResult.account);
   try {
     fs.mkdirSync(WAM_DIR, { recursive: true });
     fs.writeFileSync(
@@ -2900,9 +2903,9 @@ async function switchToAccount(email, password) {
   };
 }
 
-// ── v8: Token预热引擎 — 道法自然: 不等耗尽再行动, 提前备好弹药 ──
-// 当预判候选被选中时, 立即在后台获取其Firebase idToken并缓存
-// 切号时直接使用, 跳过~10s的Firebase登录, 实现<3s无感切换
+// ── v11: Token池预热引擎 — 天下之至柔，驰骋天下之至坚 ──
+// v8原版只预热1个候选 → v11预热top 3候选, 任一命中即<1s切号
+// 候选变化时旧token仍在_tokenCache中可用, 不浪费
 async function _prewarmCandidateToken(candidateIndex) {
   if (candidateIndex < 0 || !_store) return;
   const acc = _store.get(candidateIndex);
@@ -2919,6 +2922,8 @@ async function _prewarmCandidateToken(candidateIndex) {
       ts: cached.expiresAt - TOKEN_CACHE_TTL,
     };
     log(`🔥 prewarm: ${acc.email.substring(0, 20)} already cached`);
+    // v11: 即使主候选已缓存, 仍异步预热额外候选
+    _prewarmPool(candidateIndex).catch(() => {});
     return;
   }
 
@@ -2936,6 +2941,7 @@ async function _prewarmCandidateToken(candidateIndex) {
         idToken: loginResult.idToken,
         expiresAt: Date.now() + TOKEN_CACHE_TTL,
       });
+      _tokenCacheDirty = true;
       log(
         `🔥 prewarm: OK for ${acc.email.substring(0, 20)} (${loginResult.idToken.length}ch)`,
       );
@@ -2946,6 +2952,249 @@ async function _prewarmCandidateToken(candidateIndex) {
     }
   } catch (e) {
     log(`🔥 prewarm: error ${acc.email.substring(0, 20)}: ${e.message}`);
+  }
+  // v11: 主候选预热后, 异步预热额外候选池
+  _prewarmPool(candidateIndex).catch(() => {});
+}
+
+// v11: 池预热 — 异步预热top 2-3候选进_tokenCache (不设_prewarmedToken, 仅缓存)
+async function _prewarmPool(excludeIndex) {
+  if (!_store) return;
+  const poolSize = 2; // 额外预热2个候选
+  let warmed = 0;
+  // 从最佳候选开始, 跳过excludeIndex和已缓存的
+  let searchFrom = excludeIndex;
+  for (let i = 0; i < poolSize; i++) {
+    const nextI = _store.getBestIndex(searchFrom, true);
+    if (nextI < 0 || nextI === excludeIndex) break;
+    const nextAcc = _store.get(nextI);
+    if (!nextAcc || !nextAcc.password) {
+      searchFrom = nextI;
+      continue;
+    }
+    const ek = nextAcc.email.toLowerCase();
+    const existing = _tokenCache.get(ek);
+    if (existing && existing.expiresAt > Date.now() + 300000) {
+      searchFrom = nextI;
+      continue; // 已有有效缓存
+    }
+    try {
+      const lr = await firebaseLogin(nextAcc.email, nextAcc.password);
+      if (lr.ok) {
+        _tokenCache.set(ek, {
+          idToken: lr.idToken,
+          expiresAt: Date.now() + TOKEN_CACHE_TTL,
+        });
+        _tokenCacheDirty = true;
+        warmed++;
+        log(`🔥 pool: +${nextAcc.email.substring(0, 20)}`);
+      }
+    } catch {}
+    searchFrom = nextI;
+  }
+  if (warmed > 0) log(`🔥 pool: ${warmed} extra tokens cached`);
+}
+
+// ── v12: 永续Token活水池 — 上善若水·水善利万物而不争 ──
+// 核心: 后台持续刷新ALL账号的Token缓存, 像活水流淌不息
+// 效果: 任意手动切号 → 必然cache HIT → 跳过3-4s Firebase登录 → inject-only切号
+// 节奏: N个账号/50分钟TTL → 每~(50*60/N)秒刷新1个 → CPU近零·网络极低
+// 道法自然: 水不等溃堤才流, Token不等切号才取 — 始终备好, 一触即发
+const TOKEN_POOL_BURST_MS = 5000; // 冲刺模式: 5秒/轮 (前3分钟快速填充)
+const TOKEN_POOL_CRUISE_MS = 45000; // 巡航模式: 45秒/轮 (v13.2: 加速恢复·水流不息)
+const TOKEN_POOL_BURST_DURATION = 180000; // 冲刺持续3分钟
+const TOKEN_POOL_MARGIN = 600000; // 提前10分钟续期
+const POOL_PARALLEL_BURST = 3; // v13: 冲刺并行度 (64÷3≈22 ticks×5s≈110s填满 vs 串行320s)
+const POOL_PARALLEL_CRUISE = 1; // v13: 巡航并行度 (低压维持)
+let _tokenPoolStartTs = 0; // 活水池启动时间
+let _tokenPoolTickCount = 0; // v13: pool自己的tick计数器
+const _tokenPoolBlacklist = new Set(); // 永久失败账号 (INVALID_PASSWORD等)
+const _poolFailStreak = new Map(); // email -> {count, lastFail} 连续网络失败计数
+const POOL_TEMP_BAN_THRESHOLD = 3; // 连续失败N次后临时拉黑
+const POOL_TEMP_BAN_DURATION = 900000; // 临时拉黑15分钟
+
+async function _tokenPoolTick() {
+  if (!_store || _switching || !isWamMode()) return;
+  const accounts = _store.accounts;
+  if (!accounts || accounts.length === 0) return;
+
+  // v13: 收集所有需要刷新的候选, 按紧急度排序, 取top N并行获取
+  const candidates = [];
+  let totalCached = 0;
+  let totalWithPw = 0;
+  for (let i = 0; i < accounts.length; i++) {
+    const acc = accounts[i];
+    if (!acc || !acc.password) continue;
+    totalWithPw++;
+    const ek = acc.email.toLowerCase();
+    if (_tokenPoolBlacklist.has(ek)) continue;
+    // v13.4: 连续网络失败临时拉黑 — 不争·水善利万物而不争
+    const streak = _poolFailStreak.get(ek);
+    if (
+      streak &&
+      streak.count >= POOL_TEMP_BAN_THRESHOLD &&
+      Date.now() - streak.lastFail < POOL_TEMP_BAN_DURATION
+    )
+      continue;
+    if (
+      streak &&
+      streak.count >= POOL_TEMP_BAN_THRESHOLD &&
+      Date.now() - streak.lastFail >= POOL_TEMP_BAN_DURATION
+    )
+      _poolFailStreak.delete(ek); // 解禁
+    const cached = _tokenCache.get(ek);
+    if (cached && cached.expiresAt > Date.now()) totalCached++;
+    let urgency = 0;
+    if (!cached || cached.expiresAt <= Date.now()) {
+      urgency = 3; // 无缓存或已过期: 最紧急
+    } else if (cached.expiresAt < Date.now() + TOKEN_POOL_MARGIN) {
+      urgency = 2; // 即将过期: 紧急
+    } else if (cached.expiresAt < Date.now() + TOKEN_CACHE_TTL * 0.6) {
+      urgency = 1; // 已过半: 低优先
+    } else {
+      continue; // 充足
+    }
+    candidates.push({ idx: i, urgency, exp: cached ? cached.expiresAt : 0 });
+  }
+
+  _tokenPoolTickCount++;
+  // v13: pool自己的周期报告 (每10 ticks或填满时)
+  const isBurstPhase =
+    Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
+  if (
+    _tokenPoolTickCount % 10 === 0 ||
+    _tokenPoolTickCount <= 3 ||
+    totalCached === totalWithPw
+  ) {
+    log(
+      `🔥 pool: ${totalCached}/${totalWithPw} cached, bl=${_tokenPoolBlacklist.size}, tick#${_tokenPoolTickCount} ${isBurstPhase ? "BURST" : "cruise"}`,
+    );
+  }
+
+  if (candidates.length === 0) return; // 所有Token充足
+
+  // 按紧急度降序, 同紧急度按过期时间升序
+  candidates.sort((a, b) => b.urgency - a.urgency || a.exp - b.exp);
+
+  // v13: 冲刺期多路并发, 巡航期单路 — 上善若水, 水善利万物而不争
+  const isBurst = Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
+  const parallel = isBurst ? POOL_PARALLEL_BURST : POOL_PARALLEL_CRUISE;
+  const batch = candidates.slice(0, parallel);
+
+  await Promise.allSettled(
+    batch.map(async ({ idx }) => {
+      if (_switching) return;
+      const acc = accounts[idx];
+      const ek = acc.email.toLowerCase();
+      try {
+        const lr = await firebaseLogin(acc.email, acc.password);
+        if (lr.ok) {
+          _tokenCache.set(ek, {
+            idToken: lr.idToken,
+            expiresAt: Date.now() + TOKEN_CACHE_TTL,
+          });
+          _tokenCacheDirty = true;
+          _poolFailStreak.delete(ek); // 成功则清除失败计数
+          if (idx === _predictiveCandidate) {
+            _prewarmedToken = {
+              email: ek,
+              idToken: lr.idToken,
+              ts: Date.now(),
+            };
+          }
+        } else {
+          // v13: 记录失败原因 (以前静默吞掉 → 池为什么不填无从诊断)
+          if (/INVALID|NOT_FOUND|DISABLED|WRONG/.test(lr.error || "")) {
+            _tokenPoolBlacklist.add(ek);
+            log(
+              `🔥 pool: blacklisted ${acc.email.substring(0, 20)} (${lr.error})`,
+            );
+          } else {
+            // v13.4: 连续网络失败计数 — 多言数穷不如守中
+            const fs0 = _poolFailStreak.get(ek) || { count: 0, lastFail: 0 };
+            fs0.count++;
+            fs0.lastFail = Date.now();
+            _poolFailStreak.set(ek, fs0);
+            if (fs0.count === POOL_TEMP_BAN_THRESHOLD) {
+              log(
+                `🔥 pool: temp-ban ${acc.email.substring(0, 20)} (×${fs0.count} consecutive fails, ${POOL_TEMP_BAN_DURATION / 60000}min)`,
+              );
+            } else {
+              log(
+                `🔥 pool: login fail ${acc.email.substring(0, 20)} (${lr.error || "unknown"}) [×${fs0.count}]`,
+              );
+            }
+          }
+        }
+      } catch (e) {
+        log(
+          `🔥 pool: login threw ${acc.email.substring(0, 20)} (${e.message || e})`,
+        );
+      }
+    }),
+  );
+  // v13.1: 每个tick结束后持久化缓存到磁盘
+  _saveTokenCache();
+}
+
+// v13.1: Token缓存持久化 — 地承水, 重启不失
+function _loadTokenCache() {
+  try {
+    const raw = fs.readFileSync(TOKEN_CACHE_FILE, "utf-8");
+    const entries = JSON.parse(raw);
+    let loaded = 0;
+    const now = Date.now();
+    for (const [email, data] of Object.entries(entries)) {
+      if (data && data.expiresAt > now && data.idToken) {
+        _tokenCache.set(email, data);
+        loaded++;
+      }
+    }
+    if (loaded > 0) {
+      log(`🔥 pool: loaded ${loaded} tokens from disk (survive restart)`);
+      // 有持久缓存 → 跳过冲刺, 直接巡航
+      _tokenPoolStartTs = Date.now() - TOKEN_POOL_BURST_DURATION;
+    }
+  } catch {}
+}
+
+function _saveTokenCache() {
+  if (!_tokenCacheDirty) return;
+  try {
+    const obj = {};
+    for (const [k, v] of _tokenCache) obj[k] = v;
+    fs.mkdirSync(WAM_DIR, { recursive: true });
+    fs.writeFileSync(TOKEN_CACHE_FILE, JSON.stringify(obj));
+    _tokenCacheDirty = false;
+  } catch {}
+}
+
+function _startTokenPool() {
+  if (_tokenPoolTimer) return;
+  _loadTokenCache(); // v13.1: 先从磁盘恢复缓存
+  _tokenPoolStartTs = _tokenPoolStartTs || Date.now();
+  // v13: 冲刺模式前3分钟每5s并行填充N个, 快速填满缓存
+  const scheduleNext = () => {
+    const isBurst = Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
+    const interval = isBurst ? TOKEN_POOL_BURST_MS : TOKEN_POOL_CRUISE_MS;
+    _tokenPoolTimer = setTimeout(async () => {
+      await _tokenPoolTick();
+      if (_tokenPoolTimer) scheduleNext();
+    }, interval);
+  };
+  scheduleNext();
+  // 首次立即触发
+  setTimeout(() => _tokenPoolTick(), 2000);
+  log(
+    `engine: token pool started (burst ${TOKEN_POOL_BURST_MS / 1000}s×${POOL_PARALLEL_BURST}并发×${TOKEN_POOL_BURST_DURATION / 60000}min → cruise ${TOKEN_POOL_CRUISE_MS / 1000}s) [v13.2]`,
+  );
+}
+
+function _stopTokenPool() {
+  if (_tokenPoolTimer) {
+    clearTimeout(_tokenPoolTimer);
+    _tokenPoolTimer = null;
+    log("engine: token pool stopped");
   }
 }
 
@@ -2982,9 +3231,12 @@ function _ensureEngines() {
     setTimeout(() => scanBackgroundQuota(), 2000);
     log("engine: scan started");
   }
+  // v12: 永续Token活水池
+  _startTokenPool();
 }
 
 function _stopEngines() {
+  _stopTokenPool(); // v12
   if (_monitorTimer) {
     clearTimeout(_monitorTimer);
     _monitorTimer = null;
@@ -2999,6 +3251,18 @@ function _stopEngines() {
 
 // 活跃账号实时监测 (快速循环, 每MONITOR_FAST_MS)
 async function monitorActiveQuota() {
+  // v9.3: 切号锁超时保护 — 防止switchToAccount挂起导致monitor永久暂停
+  if (
+    _switching &&
+    _switchingStartTime > 0 &&
+    Date.now() - _switchingStartTime > 120000
+  ) {
+    log(
+      `⚠️ switching lock timeout (${Math.round((Date.now() - _switchingStartTime) / 1000)}s) — force release`,
+    );
+    _switching = false;
+    _switchingStartTime = 0;
+  }
   if (!_store || _switching || _monitorActive || !isWamMode()) return;
   _monitorActive = true;
   _totalMonitorCycles++;
@@ -3017,50 +3281,20 @@ async function monitorActiveQuota() {
 
     const result = await fetchAccountQuota(acc.email, acc.password);
     if (!result.ok) {
-      _monitorConsecutiveFails++;
-      // v10.0.5: 指数退避 — 连续失败时延长下次监测间隔, 根治rate_limited风暴
-      // 1次失败→多等3s, 2次→9s, 3次→27s, 上限60s
-      const backoffMs = Math.min(
-        60000,
-        MONITOR_FAST_MS * Math.pow(3, _monitorConsecutiveFails),
-      );
-      if (
-        _monitorConsecutiveFails <= 3 ||
-        _monitorConsecutiveFails % 10 === 0
-      ) {
-        log(
-          `monitor: ${acc.email.substring(0, 20)} fetch fail: ${result.error} (×${_monitorConsecutiveFails}, backoff ${Math.round(backoffMs / 1000)}s)`,
-        );
-      }
+      log(`monitor: ${acc.email.substring(0, 20)} fetch fail: ${result.error}`);
       _monitorActive = false;
-      // 额外等待退避时间后再进入下一轮
-      if (_monitorTimer && backoffMs > MONITOR_FAST_MS) {
-        clearTimeout(_monitorTimer);
-        _monitorTimer = setTimeout(async () => {
-          await monitorActiveQuota();
-          if (_monitorTimer) {
-            const monitorInterval = () =>
-              Date.now() < _burstUntil ? BURST_MS : MONITOR_FAST_MS;
-            const schedNext = () => {
-              _monitorTimer = setTimeout(async () => {
-                await monitorActiveQuota();
-                if (_monitorTimer) schedNext();
-              }, monitorInterval());
-            };
-            schedNext();
-          }
-        }, backoffMs);
-      }
       return;
     }
-    _monitorConsecutiveFails = 0; // 成功时重置
 
     const emailKey = acc.email.toLowerCase();
     const prev = _quotaSnapshots.get(emailKey);
     const now = Date.now();
+    // v9.3: weekly=-1(未知)时保留前值, 不存入-1污染快照
+    const snapWeekly =
+      result.weekly >= 0 ? result.weekly : prev ? prev.weekly : 0;
     _quotaSnapshots.set(emailKey, {
       daily: result.daily,
-      weekly: result.weekly,
+      weekly: snapWeekly,
       ts: now,
     });
     _snapshotDirty = true;
@@ -3069,7 +3303,8 @@ async function monitorActiveQuota() {
     // ── 额度变化检测 v7.1 — 消息锚定: 任意波动→立即切号 ──
     if (prev) {
       const dDelta = prev.daily - result.daily;
-      const wDelta = prev.weekly - result.weekly;
+      // v9.3: weekly未知时不参与变化检测, 只看daily
+      const wDelta = result.weekly >= 0 ? prev.weekly - result.weekly : 0;
       const hasFluctuation =
         dDelta > CHANGE_THRESHOLD || wDelta > CHANGE_THRESHOLD;
       const autoRotate = vscode.workspace
@@ -3095,13 +3330,17 @@ async function monitorActiveQuota() {
         });
 
         // ── 消息锚定核心: 波动=有人发消息→立即切到新账号, 确保下条消息用新号 ──
-        // v10.0.6: 冷却同时检查成功时间和尝试时间, 防止失败后3s循环重试
-        const switchCooldown =
-          Date.now() - Math.max(_lastSwitchTime, _lastSwitchAttemptTime) <
-          15000;
-        if (autoRotate && !_switching && !switchCooldown) {
+        // v7.3: 自动切号冷却 — 上次切号15s内不再触发, 避免连续切号风暴
+        // v9.2: 活跃账号已锁定 → 不自动切走 (道法自然: 用户主动锁定优先于自动策略)
+        const switchCooldown = Date.now() - _lastSwitchTime < 15000;
+        const injectCooldown =
+          Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
+        if (acc.skipAutoSwitch) {
+          log(`📌 活跃账号已锁定·跳过自动切号: ${acc.email.substring(0, 20)}`);
+        } else if (injectCooldown && !_switching) {
+          // v13.4: 注入失败冷却中 — 孤能浊以静之徐清
+        } else if (autoRotate && !_switching && !switchCooldown) {
           let bestI = _predictiveCandidate >= 0 ? _predictiveCandidate : -1;
-          if (bestI === activeI) bestI = -1;
           if (bestI >= 0) {
             const candAcc = _store.get(bestI);
             if (
@@ -3114,45 +3353,67 @@ async function monitorActiveQuota() {
           if (bestI < 0) bestI = _store.getBestIndex(activeI, true);
 
           if (bestI >= 0) {
-            const bestAcc = _store.get(bestI);
+            let bestAcc = _store.get(bestI);
             log(
               `⚡ 消息锚定切号: D${result.daily}%·W${result.weekly}% → ${bestAcc.email.substring(0, 20)}${_predictiveCandidate >= 0 ? " [预判]" : ""}`,
             );
             _switching = true;
             _switchingStartTime = Date.now();
             try {
-              const switchResult = await switchToAccount(
-                bestAcc.email,
-                bestAcc.password,
-              );
-              if (switchResult.ok) {
-                _store.activeIndex = bestI;
-                _store.switchCount++;
-                _lastSwitchTime = Date.now();
-                _store.save();
-                _quotaSnapshots.delete(bestAcc.email.toLowerCase());
-                _snapshotDirty = true;
-                _schedulePersist();
-                _burstUntil = Date.now() + BURST_DURATION;
-                _consecutiveChanges = 0;
-                // 切号后立即预选下一个候选 (零延迟准备) + v8: 立即预热Token
-                _predictiveCandidate = _store.getBestIndex(bestI, true);
-                if (_predictiveCandidate >= 0) {
+              // v14.1: 自动重试 — 登录失败后尝试下一个号(最多3次)
+              let switchOk = false;
+              for (let _retry = 0; _retry < 3 && !switchOk; _retry++) {
+                if (_retry > 0) {
+                  bestI = _store.getBestIndex(activeI, true);
+                  if (bestI < 0) break;
+                  bestAcc = _store.get(bestI);
                   log(
-                    `🔮 预选下一个: → ${_store.get(_predictiveCandidate).email.substring(0, 20)}`,
+                    `auto-switch retry#${_retry}: → ${bestAcc.email.substring(0, 20)}`,
                   );
-                  _prewarmCandidateToken(_predictiveCandidate); // v8: 后台预热, 不阻塞
                 }
-                setTimeout(() => monitorActiveQuota(), 1500);
-                vscode.window.showInformationMessage(
-                  `WAM: 消息锚定 → 已切换到 ${switchResult.account}`,
+                const switchResult = await switchToAccount(
+                  bestAcc.email,
+                  bestAcc.password,
                 );
-                refreshAll();
-              } else {
-                log(`auto-switch FAIL: ${switchResult.error}`);
-                vscode.window.showWarningMessage(
-                  `WAM: 切换失败 — ${switchResult.error}`,
-                );
+                if (switchResult.ok) {
+                  _store.activeIndex = bestI;
+                  _store.switchCount++;
+                  _lastSwitchTime = Date.now();
+                  _store.save();
+                  _quotaSnapshots.delete(bestAcc.email.toLowerCase());
+                  _snapshotDirty = true;
+                  _schedulePersist();
+                  _burstUntil = Date.now() + BURST_DURATION;
+                  _consecutiveChanges = 0;
+                  _predictiveCandidate = _store.getBestIndex(bestI, true);
+                  if (_predictiveCandidate >= 0) {
+                    log(
+                      `🔮 预选下一个: → ${_store.get(_predictiveCandidate).email.substring(0, 20)}`,
+                    );
+                    _prewarmCandidateToken(_predictiveCandidate);
+                  }
+                  setTimeout(() => monitorActiveQuota(), 1500);
+                  vscode.window.showInformationMessage(
+                    `WAM: 消息锚定 → 已切换到 ${switchResult.account}`,
+                  );
+                  refreshAll();
+                  switchOk = true;
+                } else if (
+                  switchResult.error &&
+                  /登录失败/.test(switchResult.error)
+                ) {
+                  log(
+                    `auto-switch FAIL#${_retry}: ${switchResult.error} — 尝试下一个`,
+                  );
+                  continue; // v14.1: 登录失败→重试下一个号
+                } else {
+                  log(`auto-switch FAIL: ${switchResult.error}`);
+                  _lastInjectFail = Date.now();
+                  _predictiveCandidate = -1;
+                  break; // 注入失败→不换号, 冷却
+                }
+              }
+              if (!switchOk && !_lastInjectFail) {
                 _predictiveCandidate = -1;
               }
             } finally {
@@ -3167,9 +3428,10 @@ async function monitorActiveQuota() {
       }
 
       // ── 预判候选: 额度<25%时提前预选, 波动时零延迟切入 ──
+      // v9.3: 用安全weekly值(snapWeekly), 不用可能为-1的result.weekly
       const effQuota = drought
         ? result.daily
-        : Math.min(result.daily, result.weekly);
+        : Math.min(result.daily, snapWeekly);
       if (
         effQuota < PREDICTIVE_THRESHOLD &&
         _predictiveCandidate < 0 &&
@@ -3186,13 +3448,22 @@ async function monitorActiveQuota() {
       if (effQuota >= PREDICTIVE_THRESHOLD) _predictiveCandidate = -1;
 
       // ── 耗尽保护: 额度极低时强制切号 (即使无波动, 防止卡死) ──
+      // v9.3: 用安全weekly值
       const isExhausted = drought
         ? result.daily < AUTO_SWITCH_THRESHOLD
-        : Math.min(result.daily, result.weekly) < AUTO_SWITCH_THRESHOLD;
+        : Math.min(result.daily, snapWeekly) < AUTO_SWITCH_THRESHOLD;
 
-      const exhaustCooldown =
-        Date.now() - Math.max(_lastSwitchTime, _lastSwitchAttemptTime) < 15000;
-      if (isExhausted && autoRotate && !_switching && !exhaustCooldown) {
+      const exhaustCooldown = Date.now() - _lastSwitchTime < 15000;
+      const exhaustInjectCd =
+        Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
+      if (
+        isExhausted &&
+        autoRotate &&
+        !_switching &&
+        !exhaustCooldown &&
+        !exhaustInjectCd &&
+        !acc.skipAutoSwitch
+      ) {
         const hrsToReset = hoursUntilDailyReset();
 
         if (
@@ -3205,49 +3476,74 @@ async function monitorActiveQuota() {
         } else if (
           !drought &&
           result.daily >= AUTO_SWITCH_THRESHOLD &&
-          result.weekly < AUTO_SWITCH_THRESHOLD &&
+          snapWeekly < AUTO_SWITCH_THRESHOLD &&
           hoursUntilWeeklyReset() <= WAIT_RESET_HOURS
         ) {
           log(
-            `⏳ Weekly耗尽(${result.weekly}%) 但${hoursUntilWeeklyReset().toFixed(1)}h后重置 → 等待`,
+            `⏳ Weekly耗尽(${snapWeekly}%) 但${hoursUntilWeeklyReset().toFixed(1)}h后重置 → 等待`,
           );
         } else {
           const reason = drought
             ? `Daily耗尽(${result.daily}%)`
-            : result.weekly < AUTO_SWITCH_THRESHOLD
-              ? `Weekly耗尽(${result.weekly}%)`
+            : snapWeekly < AUTO_SWITCH_THRESHOLD
+              ? `Weekly耗尽(${snapWeekly}%)`
               : `Daily耗尽(${result.daily}%)`;
           let bestI =
             _predictiveCandidate >= 0
               ? _predictiveCandidate
               : _store.getBestIndex(activeI, true);
-          if (bestI === activeI) bestI = -1;
           if (bestI >= 0) {
-            const bestAcc = _store.get(bestI);
+            let bestAcc = _store.get(bestI);
             log(`⚡ 耗尽保护: ${reason} → ${bestAcc.email.substring(0, 20)}`);
             _switching = true;
             _switchingStartTime = Date.now();
             try {
-              const sr = await switchToAccount(bestAcc.email, bestAcc.password);
-              if (sr.ok) {
-                _store.activeIndex = bestI;
-                _store.switchCount++;
-                _lastSwitchTime = Date.now();
-                _predictiveCandidate = _store.getBestIndex(bestI, true);
-                if (_predictiveCandidate >= 0)
-                  _prewarmCandidateToken(_predictiveCandidate); // v8: 预热下一个
-                _store.save();
-                _quotaSnapshots.delete(bestAcc.email.toLowerCase());
-                _snapshotDirty = true;
-                _schedulePersist();
-                _burstUntil = Date.now() + BURST_DURATION;
-                setTimeout(() => monitorActiveQuota(), 1500);
-                vscode.window.showInformationMessage(
-                  `WAM: ${reason} → 切换到 ${sr.account}`,
+              // v14.1: 自动重试 — 登录失败后尝试下一个号(最多3次)
+              let switchOk = false;
+              for (let _retry = 0; _retry < 3 && !switchOk; _retry++) {
+                if (_retry > 0) {
+                  bestI = _store.getBestIndex(activeI, true);
+                  if (bestI < 0) break;
+                  bestAcc = _store.get(bestI);
+                  log(
+                    `exhaust-retry#${_retry}: → ${bestAcc.email.substring(0, 20)}`,
+                  );
+                }
+                const sr = await switchToAccount(
+                  bestAcc.email,
+                  bestAcc.password,
                 );
-                refreshAll();
-              } else {
-                log(`exhaust-switch FAIL: ${sr.error}`);
+                if (sr.ok) {
+                  _store.activeIndex = bestI;
+                  _store.switchCount++;
+                  _lastSwitchTime = Date.now();
+                  _predictiveCandidate = _store.getBestIndex(bestI, true);
+                  if (_predictiveCandidate >= 0)
+                    _prewarmCandidateToken(_predictiveCandidate);
+                  _store.save();
+                  _quotaSnapshots.delete(bestAcc.email.toLowerCase());
+                  _snapshotDirty = true;
+                  _schedulePersist();
+                  _burstUntil = Date.now() + BURST_DURATION;
+                  setTimeout(() => monitorActiveQuota(), 1500);
+                  vscode.window.showInformationMessage(
+                    `WAM: ${reason} → 切换到 ${sr.account}`,
+                  );
+                  refreshAll();
+                  switchOk = true;
+                } else if (sr.error && /登录失败/.test(sr.error)) {
+                  log(
+                    `exhaust-switch FAIL#${_retry}: ${sr.error} — 尝试下一个`,
+                  );
+                  continue;
+                } else {
+                  log(`exhaust-switch FAIL: ${sr.error}`);
+                  _lastInjectFail = Date.now();
+                  _predictiveCandidate = -1;
+                  break;
+                }
+              }
+              if (!switchOk && !_lastInjectFail) {
                 _predictiveCandidate = -1;
               }
             } finally {
@@ -3276,6 +3572,16 @@ async function monitorActiveQuota() {
 
 // 后台全量扫描 (慢速, 每轮扫描SCAN_BATCH_SIZE个账号)
 async function scanBackgroundQuota() {
+  // v9.3: 切号锁超时保护 (与monitor同步)
+  if (
+    _switching &&
+    _switchingStartTime > 0 &&
+    Date.now() - _switchingStartTime > 120000
+  ) {
+    log(`⚠️ scan: switching lock timeout — force release`);
+    _switching = false;
+    _switchingStartTime = 0;
+  }
   if (!_store || _scanRunning || _switching || !isWamMode()) return;
   _scanRunning = true;
 
@@ -3324,9 +3630,18 @@ async function scanBackgroundQuota() {
       try {
         const result = await fetchAccountQuota(acc.email, acc.password);
         if (result.ok) {
+          // v9.3: weekly=-1(未知)时保留前值, 不存入-1污染快照
+          const scanSnapW =
+            result.weekly >= 0
+              ? result.weekly
+              : prev
+                ? prev.weekly
+                : storedW != null
+                  ? storedW
+                  : 0;
           _quotaSnapshots.set(emailKey, {
             daily: result.daily,
-            weekly: result.weekly,
+            weekly: scanSnapW,
             ts: Date.now(),
           });
           _snapshotDirty = true;
@@ -3335,9 +3650,11 @@ async function scanBackgroundQuota() {
           const baseD = prev ? prev.daily : storedD != null ? storedD : -1;
           const baseW = prev ? prev.weekly : storedW != null ? storedW : -1;
 
-          if (baseD >= 0 && baseW >= 0) {
+          if (baseD >= 0 && (baseW >= 0 || result.weekly >= 0)) {
             const dDelta = baseD - result.daily;
-            const wDelta = baseW - result.weekly;
+            // v9.3: weekly未知时不参与变化检测
+            const wDelta =
+              result.weekly >= 0 && baseW >= 0 ? baseW - result.weekly : 0;
             if (
               Math.abs(dDelta) > CHANGE_THRESHOLD ||
               Math.abs(wDelta) > CHANGE_THRESHOLD
@@ -3469,7 +3786,7 @@ function updateStatusBar() {
   if (_mode === "official") {
     _statusBarItem.text = "$(key) 官方模式";
     _statusBarItem.tooltip =
-      "WAM v10.0.5 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
+      "WAM v10.0 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
     return;
   }
   const s = _store.getPoolStats();
@@ -3486,7 +3803,7 @@ function updateStatusBar() {
     const monTag = _monitorActive ? "$(sync~spin)" : "$(zap)";
     _statusBarItem.text = `${monTag}${droughtTag} D${liveD}%·W${liveW}% ${s.available}/${s.pwCount}号${inUseTag}${waitTag}`;
     _statusBarItem.tooltip =
-      `WAM v10.0.5 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
+      `WAM v10.0 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
       `活跃: ${activeAcc.email}\n${h.plan}\n` +
       `号池: ${s.available}可用 · ${s.exhausted}耗尽 · ${s.waiting}等重置\n` +
       (s.drought
@@ -3497,7 +3814,7 @@ function updateStatusBar() {
       `监测: ${_totalMonitorCycles}轮 · ${_totalChangesDetected}次变动`;
   } else {
     _statusBarItem.text = `$(zap) ${s.pwCount}号`;
-    _statusBarItem.tooltip = `WAM v10.0.5 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
+    _statusBarItem.tooltip = `WAM v10.0 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
   }
 }
 
@@ -3557,64 +3874,6 @@ async function handleWebviewMessage(msg) {
           _ensureEngines();
         } else {
           vscode.window.showErrorMessage(`WAM: 切换失败 — ${result.error}`);
-        }
-      } finally {
-        _switching = false;
-        refreshAll();
-      }
-      break;
-    }
-    case "autoSwitch": {
-      // 自动切号: 跳过当前账号, 从根本上避免无效切换
-      if (_mode === "official") {
-        vscode.window.showWarningMessage(
-          "WAM: 官方模式下无法切号，请先切回WAM模式",
-        );
-        break;
-      }
-      if (msg.index === _store.activeIndex) {
-        broadcastMessage({ type: "toast", text: "已是当前账号，跳过切换" });
-        refreshAll();
-        break;
-      }
-      const autoAcc = _store.get(msg.index);
-      if (!autoAcc || !autoAcc.password) break;
-      if (_switching) {
-        const autoLockAge = Date.now() - _switchingStartTime;
-        if (autoLockAge < 30000) {
-          vscode.window.showWarningMessage(
-            `WAM: 正在切换中(${Math.round(autoLockAge / 1000)}s)...请稍候`,
-          );
-          break;
-        }
-        log(
-          `autoSwitch: 手动抢占 — 强制释放超时锁(${Math.round(autoLockAge / 1000)}s)`,
-        );
-        _switching = false;
-      }
-      _switching = true;
-      _switchingStartTime = Date.now();
-      broadcastMessage({ type: "switching", index: msg.index });
-      try {
-        const autoResult = await switchToAccount(
-          autoAcc.email,
-          autoAcc.password,
-        );
-        if (autoResult.ok) {
-          _store.activeIndex = msg.index;
-          _store.switchCount++;
-          _store.clearInUse(autoAcc.email);
-          _writeInstanceClaim(autoAcc.email);
-          _quotaSnapshots.delete(autoAcc.email.toLowerCase());
-          _snapshotDirty = true;
-          _schedulePersist();
-          _store.save();
-          vscode.window.showInformationMessage(
-            `WAM: 自动切换到 ${autoResult.account} (${autoResult.ms}ms)`,
-          );
-          _ensureEngines();
-        } else {
-          vscode.window.showErrorMessage(`WAM: 切换失败 — ${autoResult.error}`);
         }
       } finally {
         _switching = false;
@@ -3693,6 +3952,15 @@ async function handleWebviewMessage(msg) {
           : acc2.email;
         await vscode.env.clipboard.writeText(text);
         broadcastMessage({ type: "toast", text: "已复制账号密码" });
+      }
+      break;
+    }
+    case "toggleSkip": {
+      const acc3 = _store.get(msg.index);
+      if (acc3) {
+        acc3.skipAutoSwitch = !acc3.skipAutoSwitch;
+        _store.save();
+        refreshAll();
       }
       break;
     }
@@ -3910,7 +4178,7 @@ function buildHtml(store) {
         <span class="ql" style="color:${wColor}">${isUnchecked ? "W?" : "W" + wPct}</span>
       </span>
       <span class="acts">
-        <button class="b ar" onclick="ar(${i})" title="自动切号(跳过当前账号)"${isActive || _mode === "official" ? ' disabled style="opacity:.3;cursor:not-allowed"' : ""}>&#9654;</button>
+        <button class="b sk" onclick="sk(${i})" title="${a.skipAutoSwitch ? "已锁定·自动切号跳过此号(点击解锁)" : "锁定·防止自动切号选到此号"}" style="opacity:${a.skipAutoSwitch ? "1;color:#f0c674" : ".4"}">${a.skipAutoSwitch ? "&#128274;" : "&#128275;"}</button>
         <button class="b sw" onclick="sw(${i})" title="手动切换(无限制)"${_mode === "official" ? ' disabled style="opacity:.3;cursor:not-allowed"' : ""}>&#9889;</button>
         <button class="b cp" onclick="cp(${i})" title="复制账号密码">&#128203;</button>
         <button class="b rm" onclick="rm(${i})" title="删除">&times;</button>
@@ -4059,8 +4327,6 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .ql{font-size:10px;font-weight:600;width:26px;text-align:right}
 .acts{display:flex;gap:2px;flex-shrink:0}
 .b{width:20px;height:20px;border:none;border-radius:3px;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0;transition:all .1s}
-.b.ar{background:#1a3a1a;color:#4ec9b0}
-.b.ar:hover:not(:disabled){background:#2a4a2a;transform:scale(1.1)}
 .b.sw{background:var(--btn);color:#fff}
 .b.sw:hover{background:var(--btn-h);transform:scale(1.1)}
 .b.cp{background:#333;color:#aaa}
@@ -4170,9 +4436,9 @@ const vscode = acquireVsCodeApi();
 function send(type, index) { vscode.postMessage({type, index}); }
 function setWamMode(mode) { vscode.postMessage({type:'setMode', mode}); }
 function sw(i) { send('switch', i); }
-function ar(i) { send('autoSwitch', i); }
 function cp(i) { vscode.postMessage({type:'copyAccount', index:i}); }
 function rm(i) { send('remove', i); }
+function sk(i) { vscode.postMessage({type:'toggleSkip', index:i}); }
 
 function toggleAdd() {
   const body = document.getElementById('addBody');
@@ -4308,12 +4574,20 @@ async function doAutoRotate(store) {
 // 文件监听 — 外部bridge兼容
 // ============================================================
 function startFileWatcher() {
+  // v9.3: 防重入 — 已有watcher则不创建新的
+  if (_watcher) return;
   try {
     fs.mkdirSync(WAM_DIR, { recursive: true });
   } catch {}
   _watcher = fs.watch(WAM_DIR, (eventType, filename) => {
-    if (filename === "oneshot_token.json" && eventType === "rename") {
+    // v9.3: 同时监听rename和change事件 (不同OS行为不同)
+    if (
+      filename === "oneshot_token.json" &&
+      (eventType === "rename" || eventType === "change")
+    ) {
       setTimeout(async () => {
+        // v9.3: 先检查文件是否存在, 避免无效rename抛错污染日志
+        if (!fs.existsSync(TOKEN_FILE)) return;
         // v7.3.1: 真原子性 — renameSync是文件系统级原子操作, 只有一个实例能成功rename
         const claimFile = path.join(WAM_DIR, `_claimed_${_instanceId}.json`);
         let rawData;
@@ -4335,22 +4609,24 @@ function startFileWatcher() {
           if (!data.idToken) return;
           log(`watcher: external token for ${data.email || "?"}`);
           const result = await injectAuth(data.idToken);
-          fs.writeFileSync(
-            RESULT_FILE,
-            JSON.stringify({
-              ok: result.ok,
-              ts: Date.now(),
-              email: data.email || "",
-              account: result.account || "",
-              apiKey: result.ok
-                ? (result.apiKey || "").substring(0, 25) + "..."
-                : "",
-              error: result.error || undefined,
-              sessionId: result.sessionId || "",
-            }),
-          );
-          // v10.0.5: 同步preferredAccount
-          if (result.ok) _syncPreferredAccount(result.account);
+          try {
+            fs.writeFileSync(
+              RESULT_FILE,
+              JSON.stringify({
+                ok: result.ok,
+                ts: Date.now(),
+                email: data.email || "",
+                account: result.account || "",
+                apiKey: result.ok
+                  ? (result.apiKey || "").substring(0, 25) + "..."
+                  : "",
+                error: result.error || undefined,
+                sessionId: result.sessionId || "",
+              }),
+            );
+          } catch (we) {
+            log(`watcher: result write fail: ${we.message}`);
+          }
           log(
             `watcher: inject ${result.ok ? "OK" : "FAIL"}: ${result.account || result.error}`,
           );
@@ -4361,7 +4637,8 @@ function startFileWatcher() {
       }, 500);
     }
   });
-  _watcher.on("error", () => {
+  _watcher.on("error", (err) => {
+    log(`watcher error event: ${err?.message || "unknown"}`);
     _watcher = null;
     setTimeout(startFileWatcher, 5000);
   });
@@ -4369,11 +4646,165 @@ function startFileWatcher() {
 }
 
 // ============================================================
-// 激活 — v6.0 · 实时额度监测 · 重置感知 · 反者道之动
+// v14.0: 自诊断 — 道法自然·验证一切
+// ============================================================
+async function selfTest() {
+  const results = [];
+  const t0 = Date.now();
+
+  // 1. 代理检测
+  try {
+    const sysProxy = _getSystemProxy();
+    const port = await _detectProxy();
+    results.push({
+      test: "proxy",
+      ok: port > 0,
+      detail:
+        port > 0
+          ? `${_proxyHostCache}:${port}${sysProxy ? ` (${sysProxy.source})` : " (scan)"}`
+          : sysProxy
+            ? `${sysProxy.host}:${sysProxy.port} verify failed`
+            : "no proxy found",
+    });
+  } catch (e) {
+    results.push({ test: "proxy", ok: false, detail: e.message });
+  }
+
+  // 2. Firebase连通性
+  try {
+    const testBody = JSON.stringify({ returnSecureToken: true });
+    const port = await _detectProxy();
+    let fbOk = false;
+    if (port) {
+      try {
+        const r = await _httpsViaProxy(
+          _proxyHostCache,
+          port,
+          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${FIREBASE_KEYS[0]}`,
+          testBody,
+          8000,
+          { Referer: FIREBASE_REFERER },
+        );
+        fbOk = !!r;
+      } catch {}
+    }
+    if (!fbOk) {
+      try {
+        const r = await _httpsPost(
+          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${FIREBASE_KEYS[0]}`,
+          testBody,
+          { timeout: 8000 },
+        );
+        fbOk = !!r;
+      } catch {}
+    }
+    results.push({
+      test: "firebase",
+      ok: fbOk,
+      detail: fbOk ? "reachable" : "unreachable",
+    });
+  } catch (e) {
+    results.push({ test: "firebase", ok: false, detail: e.message });
+  }
+
+  // 3. 官方API端点
+  try {
+    let officialOk = false;
+    let okEndpoint = "";
+    const port = await _detectProxy();
+    const dummyProto = encodeProtoString("test");
+    for (const url of OFFICIAL_PLAN_STATUS_URLS) {
+      try {
+        let resp;
+        if (port) {
+          resp = await _httpsPostRawViaProxy(
+            _proxyHostCache,
+            port,
+            url,
+            dummyProto,
+            8000,
+          );
+        } else {
+          resp = await _httpsPostRaw(url, dummyProto, { timeout: 8000 });
+        }
+        if (resp.status && resp.status < 500) {
+          officialOk = true;
+          okEndpoint = new URL(url).hostname;
+          break;
+        }
+      } catch {}
+    }
+    results.push({
+      test: "official_api",
+      ok: officialOk,
+      detail: officialOk
+        ? `${okEndpoint} reachable`
+        : "all endpoints unreachable",
+    });
+  } catch (e) {
+    results.push({ test: "official_api", ok: false, detail: e.message });
+  }
+
+  // 4. Relay端点
+  try {
+    let relayOk = false;
+    const ip = await _resolveRelayIP();
+    if (ip) {
+      try {
+        const dummyProto = encodeProtoString("test");
+        const planUrl = `https://${RELAY_HOST}/windsurf/plan-status`;
+        const resp = await _httpsPostRaw(planUrl, dummyProto, {
+          timeout: 8000,
+          hostname: ip,
+        });
+        relayOk = resp.status && resp.status < 500;
+      } catch {}
+    }
+    results.push({
+      test: "relay",
+      ok: relayOk,
+      detail: relayOk
+        ? `${ip} reachable`
+        : ip
+          ? `${ip} unreachable`
+          : "DNS failed",
+    });
+  } catch (e) {
+    results.push({ test: "relay", ok: false, detail: e.message });
+  }
+
+  // 5. 注入命令可用性
+  try {
+    const availCmds = await vscode.commands.getCommands(true);
+    const found = INJECT_COMMANDS.filter((c) => availCmds.includes(c));
+    results.push({
+      test: "inject_cmd",
+      ok: found.length > 0,
+      detail: found.length > 0 ? found.join(", ") : "no inject command found",
+    });
+    if (found.length > 0 && !_workingInjectCmd) {
+      _workingInjectCmd = found[0];
+      log(`selfTest: inject cmd detected → ${found[0]}`);
+    }
+  } catch (e) {
+    results.push({ test: "inject_cmd", ok: false, detail: e.message });
+  }
+
+  const ms = Date.now() - t0;
+  const allOk = results.every((r) => r.ok);
+  const summary = results
+    .map((r) => `${r.ok ? "✓" : "✗"} ${r.test}: ${r.detail}`)
+    .join("\n");
+  log(`selfTest [${ms}ms] ${allOk ? "ALL PASS" : "SOME FAIL"}:\n${summary}`);
+  return { ok: allOk, results, ms, summary };
+}
+
+// ============================================================
+// 激活 — v14.0 · 道法自然 · 万法归宗 · 反者道之动
 // ============================================================
 function activate(context) {
   log(
-    `activate v10.0.5-五感模式 — inst=${_instanceId} 单key·登录限流·quota冷却·失败冷却·3次注入·指数退避·代理快恢·CONNECT验证·agent隔离·纯热替换·绝不logout·绝不杀agent·Token预热·preferredAccount同步`,
+    `activate v14.2.0-锚定本源 — inst=${_instanceId} 根治hung注入·无条件p3重试·连续失败命令重置·token缓存保留`,
   );
 
   const gsPath =
@@ -4667,10 +5098,25 @@ function activate(context) {
       const inUseEmails = [..._store._inUse.keys()]
         .map((e) => e.substring(0, 15))
         .join(", ");
-      let msg = `WAM v10.0.5 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
+      let msg = `WAM v14.0.0 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
       if (activeAcc) msg += ` | 活跃: ${activeAcc.email.substring(0, 20)}`;
       if (_store._inUse.size > 0) msg += ` | 使用中: ${inUseEmails}`;
       vscode.window.showInformationMessage(msg);
+    }),
+    // v14.0: 自诊断命令 — 验证一切
+    vscode.commands.registerCommand("wam.selfTest", async () => {
+      vscode.window.showInformationMessage("WAM: 自诊断运行中...");
+      const result = await selfTest();
+      const lines = result.results.map(
+        (r) => `${r.ok ? "✓" : "✗"} ${r.test}: ${r.detail}`,
+      );
+      const header = result.ok
+        ? `✅ ALL PASS (${result.ms}ms)`
+        : `⚠️ SOME FAIL (${result.ms}ms)`;
+      vscode.window.showInformationMessage(
+        `WAM 自诊断: ${header}\n${lines.join("\n")}`,
+        { modal: true },
+      );
     }),
   );
 
@@ -4693,7 +5139,9 @@ function activate(context) {
         if (!newText || newText.length < 20 || newText.length > 500) return;
         if (/rate.?limit.?exceeded|Rate limit error/i.test(newText)) {
           const cooldown = Date.now() - _lastSwitchTime < 10000;
-          if (cooldown) return; // 刚切过, 不重复
+          const rlInjectCd =
+            Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
+          if (cooldown || rlInjectCd) return; // 刚切过或注入失败冷却中
           log(
             `🚨 rate-limit intercepted in document! Triggering proactive switch...`,
           );
@@ -4701,11 +5149,10 @@ function activate(context) {
             .getConfiguration("wam")
             .get("autoRotate", true);
           if (!autoRotate) return;
-          let bestI =
+          const bestI =
             _predictiveCandidate >= 0
               ? _predictiveCandidate
               : _store.getBestIndex(_store.activeIndex, true);
-          if (bestI === _store.activeIndex) bestI = -1;
           if (bestI < 0) {
             log("rate-limit: no available account");
             return;
@@ -4730,6 +5177,8 @@ function activate(context) {
                 `WAM: 🚨 Rate-limit拦截 → 已无感切换到 ${sr.account} (${sr.ms}ms)`,
               );
               refreshAll();
+            } else {
+              _lastInjectFail = Date.now(); // v13.4
             }
           } finally {
             _switching = false;
@@ -4778,6 +5227,61 @@ function activate(context) {
   });
   log(`instance: ${_instanceId} registered (pid=${process.pid})`);
 
+  // ── v13.6: 热部署自动重载 — 道法自然·无需手动重启 ──
+  // 原理: _dao.ps1部署后写入信号文件 → 扩展2s内检测到 → 落盘全部状态 → 自动重载窗口
+  // 此机制不受模式限制(WAM/官方都生效), 确保任何部署都能无感生效
+  try {
+    fs.mkdirSync(WAM_DIR, { recursive: true });
+  } catch {}
+  // 写入就绪标记: 告知_dao.ps1本扩展已支持自动重载
+  try {
+    fs.writeFileSync(RELOAD_READY, "v14.0", "utf8");
+  } catch {}
+  // 清理上次残留的信号文件 (避免启动即重载死循环)
+  try {
+    if (fs.existsSync(RELOAD_SIGNAL)) fs.unlinkSync(RELOAD_SIGNAL);
+  } catch {}
+  _reloadWatcher = setInterval(() => {
+    try {
+      if (!fs.existsSync(RELOAD_SIGNAL)) return;
+      if (_switching) return; // 切号中不重载, 等完成
+      let sigData = "";
+      try {
+        sigData = fs.readFileSync(RELOAD_SIGNAL, "utf8").trim();
+      } catch {
+        return;
+      }
+      try {
+        fs.unlinkSync(RELOAD_SIGNAL);
+      } catch {}
+      log(`auto-reload: deploy signal (${sigData}) — 道法自然·自动重载`);
+      // 落盘全部状态 (deactivate也会做, 但双保险)
+      try {
+        if (_store) _store.save();
+      } catch {}
+      try {
+        _saveSnapshots();
+      } catch {}
+      try {
+        if (_store) _saveInUse(_store);
+      } catch {}
+      try {
+        _saveTokenCache();
+      } catch {}
+      setTimeout(() => {
+        vscode.commands.executeCommand("workbench.action.reloadWindow");
+      }, 800);
+    } catch {}
+  }, 2000);
+  context.subscriptions.push({
+    dispose() {
+      if (_reloadWatcher) {
+        clearInterval(_reloadWatcher);
+        _reloadWatcher = null;
+      }
+    },
+  });
+
   // ── 延迟启动 ──
   setTimeout(() => {
     // v7.4: 官方模式下不启动文件监听, 不处理待注入token
@@ -4787,10 +5291,40 @@ function activate(context) {
         log("startup: pending token found");
         vscode.commands.executeCommand("wam.injectToken");
       }
-      // v10: 冷启动修复 — 立即启动扫描引擎, 不等首次切号
-      // 根治: 新安装用户所有账号显示"未验"0D/0W的问题
+      // v11: 恢复activeIndex (根治: 重启后activeIndex丢失→monitor不运行)
+      if (_store && _store.activeIndex < 0) {
+        try {
+          const lastResult = JSON.parse(fs.readFileSync(RESULT_FILE, "utf8"));
+          if (lastResult.ok && lastResult.email) {
+            const ek = lastResult.email.toLowerCase();
+            for (let i = 0; i < _store.accounts.length; i++) {
+              if (_store.accounts[i].email.toLowerCase() === ek) {
+                _store.activeIndex = i;
+                _writeInstanceClaim(lastResult.email);
+                log(
+                  `startup: recovered activeIndex=${i} from inject_result (${lastResult.email.substring(0, 20)})`,
+                );
+                break;
+              }
+            }
+          }
+        } catch {}
+      }
+      // v11: 启动时立即启动引擎 (不再等首次切号, 避免鸡生蛋问题)
       _ensureEngines();
-      log("startup: WAM模式 — v10: 引擎已立即启动, 后台扫描开始获取额度");
+      log("startup: WAM模式 — 监测引擎+Token活水池已启动");
+      // v14.0: 启动自诊断 — 静默检测, 记录日志, 不打扰用户
+      selfTest()
+        .then((r) => {
+          if (!r.ok)
+            log(
+              `startup selfTest: ${r.results
+                .filter((x) => !x.ok)
+                .map((x) => x.test)
+                .join(",")}`,
+            );
+        })
+        .catch(() => {});
     } else {
       log("startup: 官方模式 — 零干扰·无监听/心跳/引擎");
     }
@@ -4820,17 +5354,30 @@ function deactivate() {
     _rateLimitWatcher.dispose();
     _rateLimitWatcher = null;
   }
+  if (_reloadWatcher) {
+    clearInterval(_reloadWatcher);
+    _reloadWatcher = null;
+  }
   _prewarmedToken = null;
+  _tokenCache.clear();
+  _switching = false;
   if (_editorPanel) {
     _editorPanel.dispose();
     _editorPanel = null;
   }
+  // 关闭前存储账号数据
+  try {
+    if (_store) _store.save();
+  } catch {}
   // 关闭前落盘: 确保快照和使用中标记不丢失
   try {
     _saveSnapshots();
   } catch {}
   try {
     if (_store) _saveInUse(_store);
+  } catch {}
+  try {
+    _saveTokenCache();
   } catch {}
   // 清除实例声明
   try {
