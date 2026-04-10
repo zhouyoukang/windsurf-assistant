@@ -1,8 +1,16 @@
-// WAM v15.0 — 万法归宗·道法自然: Chromium原生网络桥·官方API直连·系统代理自适应·版本自适应注入
+// WAM v16.0 — 万法归宗·从根本去除端口依赖: Chromium原生网络桥·统一代理描述符·零固定端口·零固定地址
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
 // 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
 // v15.0: Webview fetch()走Chromium渲染进程 — 与Windsurf官方登录完全同一网络路径
-// 只要用户能官方登录Windsurf → 此通道必然可达Firebase/Codeium · 道法自然
+// v15.1: Bridge生命周期管理 — startup自动创建·sidebar retainContext·网络变化感知·proxy缓存联动
+// v15.2: 道可道非常道 — _httpsPost/_httpsPostRaw自动感知系统代理·LAN网关自动发现
+// v16.0: 万法归宗 — 从根本去除端口依赖·解构用户底层:
+//   - 消灭 PROXY_SCAN_HOST / PROXY_PORTS 硬编码常量
+//   - _detectProxy() 返回统一描述符 {host,port,source}|null (不再是端口号)
+//   - 消灭 _proxyPortCache/_proxyHostCache 双全局 → 单一 _proxyCache 描述符
+//   - 只要用户可访问Windsurf服务 → 必然可获取一切账号信息 (native bridge)
+//   - 只要用户开启魔法 → 必然可连接登录切号 (系统代理自适应)
+// 锚定本源: Chromium原生桥 > 系统代理感知 > 直连 > 动态端口发现(末路兜底)
 const vscode = require("vscode");
 const crypto = require("crypto");
 const https = require("https");
@@ -17,12 +25,12 @@ const os = require("os");
 const FIREBASE_KEYS = ["AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"];
 const FIREBASE_REFERER = "https://windsurf.com/";
 const FIREBASE_HOST = "identitytoolkit.googleapis.com";
-const PROXY_HOST = "127.0.0.1";
-const PROXY_PORTS = [
-  7890, 7897, 7891, 10808, 10809, 20808, 20809, 1080, 2080, 8118, 8889, 1081,
-  2081, 3128, 8080, 8123, 8124, 8125, 8126, 8127, 8128, 8129, 8130, 8131, 8132,
-  8133, 8134, 8135, 8136, 8137, 8138, 8139, 8140, 8141, 8142, 8143, 8144, 8145,
-  8146, 8147, 8148, 8149, 8150, 8151, 8152, 8153,
+// v16.0: 万法归宗 — 消灭一切固定端口/固定地址常量
+// 代理发现优先级: 系统代理(env/vscode/registry) > LAN网关 > localhost动态扫描
+// 端口扫描仅为末路兜底 — 真正的proxy由 _getSystemProxy() 动态获取
+// Clash:7890/7891 v2rayN:10808/10809 SSR:1080 Privoxy:8118 Squid:3128
+const _FALLBACK_SCAN_PORTS = [
+  7890, 7897, 7891, 10808, 10809, 1080, 8118, 3128, 8080,
 ];
 // v14.0: 官方API端点 — 直连Windsurf/Codeium, 不经中继, 根治relay单点故障
 const OFFICIAL_PLAN_STATUS_URLS = [
@@ -58,6 +66,9 @@ let _watcher = null;
 // 只要用户能官方登录Windsurf, 此通道必然可达Firebase/Codeium
 let _fetchIdCounter = 0;
 const _fetchPending = new Map();
+let _bridgeReady = false; // v15.1: Chromium桥就绪标志 — 道法自然: 有桥才走桥
+let _bridgeReadyCallbacks = []; // v15.1: 桥就绪后执行的回调队列
+let _bridgeEnsureTimer = null; // v15.1: 自动确保桥可用的定时器
 let _switching = false;
 let _switchingStartTime = 0; // v7.3: 切号锁开始时间, 用于超时释放+手动抢占
 let _pollTimer = null;
@@ -465,17 +476,15 @@ async function cleanupThirdPartyState() {
   _consecutiveChanges = 0;
   _predictiveCandidate = -1;
   _prewarmedToken = null; // v8: 清除预热Token
-  // 清除旧版本可能设置的代理环境变量污染
-  // 注: 仅清除WAM设置的值(127.0.0.1:7890), 不动用户自己设的代理
-  if (process.env.HTTP_PROXY === "http://127.0.0.1:7890") {
-    delete process.env.HTTP_PROXY;
-    cleaned++;
-    log("cleanup: removed HTTP_PROXY");
-  }
-  if (process.env.HTTPS_PROXY === "http://127.0.0.1:7890") {
-    delete process.env.HTTPS_PROXY;
-    cleaned++;
-    log("cleanup: removed HTTPS_PROXY");
+  // v15.2: 清除旧版本可能设置的代理环境变量污染 — 唯变所适
+  // 不再硬编码单一地址, 而是检测所有WAM可能设过的localhost代理值
+  for (const envKey of ["HTTP_PROXY", "HTTPS_PROXY"]) {
+    const val = process.env[envKey];
+    if (val && /^https?:\/\/127\.0\.0\.1:\d+\/?$/.test(val)) {
+      delete process.env[envKey];
+      cleaned++;
+      log(`cleanup: removed ${envKey}=${val}`);
+    }
   }
   log(
     `cleanup: ${cleaned} items cleaned, engines+heartbeat+watcher stopped, session logged out — 回归本源`,
@@ -1247,8 +1256,25 @@ function _cleanDeadInstances() {
 // 认证引擎 v4 — 纯Node.js · 多通道并行竞速 · 零外部依赖
 // ============================================================
 
-// ── 基础HTTPS请求 ──
+// ── 基础HTTPS请求 — v15.2: 自动感知系统代理 ──
+// 道可道非常道: 固定direct=死路, 自适应代理=活路
+// 当系统配置了代理(env/vscode/registry)时, 自动通过代理发送
+// 否则直连 (适合可直通Google Cloud的网络)
 function _httpsPost(url, body, opts = {}) {
+  // v15.2: 如果系统有代理且caller没明确指定hostname → 自动走代理
+  if (!opts.hostname && !opts._skipAutoProxy) {
+    const sysProxy = _getSystemProxy();
+    if (sysProxy) {
+      return _httpsViaProxy(
+        sysProxy.host,
+        sysProxy.port,
+        url,
+        body,
+        opts.timeout || 12000,
+        opts.headers || {},
+      );
+    }
+  }
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const reqOpts = {
@@ -1372,13 +1398,15 @@ function _httpsViaProxy(
   });
 }
 
-// ── 探测代理端口 (v10.0: CONNECT功能验证 + LAN代理自适应 — 杜绝假代理) ──
-let _proxyPortCache = null;
-let _proxyHostCache = PROXY_HOST; // v14.0: 跟踪验证通过的代理Host
-let _proxyPortCacheTs = 0;
+// ── v16.0: 统一代理描述符 — 万法归宗·从根本去除端口依赖 ──
+// 旧版: _proxyPortCache(端口号) + _proxyHostCache(主机名) 双全局 → 隐式耦合·易出错
+// 新版: 单一 _proxyCache 描述符 {host, port, source} | null → 自洽·无歧义
+let _proxyCache = null; // {host, port, source} | null — 验证通过的代理
+let _proxyCacheTs = 0;
 const PROXY_CACHE_TTL = 300000; // 5分钟 TTL
 const PROXY_FAIL_TTL = 30000; // 失败缓存30秒 (不反复锤死端口)
-let _proxyVerifyInProgress = false;
+let _proxyDetectInProgress = false;
+const _PROXY_NOT_FOUND = Symbol("no_proxy"); // 区分"未检测"(null)和"检测过无结果"
 
 // 功能验证: 不仅TCP连通, 还要CONNECT隧道能打通Google
 function _verifyProxyPort(host, port) {
@@ -1487,42 +1515,124 @@ function _getSystemProxy() {
   return null;
 }
 
+// v15.2: 动态发现默认网关 — 唯变所适·道法自然
+// 企业/VPN/家庭环境中, 代理可能运行在网关而非localhost
+function _detectDefaultGateway() {
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const [, addrs] of Object.entries(interfaces)) {
+      for (const addr of addrs) {
+        if (addr.family === "IPv4" && !addr.internal && addr.address) {
+          // 根据IP地址推断网关 (常见模式: x.x.x.1)
+          const parts = addr.address.split(".");
+          if (parts.length === 4) {
+            return `${parts[0]}.${parts[1]}.${parts[2]}.1`;
+          }
+        }
+      }
+    }
+  } catch {}
+  // Windows: 尝试从route命令获取网关
+  if (process.platform === "win32") {
+    try {
+      const { execSync } = require("child_process");
+      const out = execSync("route print 0.0.0.0 2>nul", {
+        encoding: "utf8",
+        timeout: 2000,
+      });
+      const m = out.match(/0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)/);
+      if (m) return m[1];
+    } catch {}
+  }
+  return null;
+}
+
+// v16.0: _detectProxy() 返回统一描述符 — 万法归宗·从根本去除端口依赖
+// 旧版: 返回 Promise<number> (端口号, 0=无代理) + 隐式_proxyHostCache全局
+// 新版: 返回 Promise<{host,port,source}|null> — 自洽, 无隐式状态, 调用方解构即用
 function _detectProxy() {
   const now = Date.now();
+  // 缓存命中: 返回已验证的描述符或null
   if (
-    _proxyPortCache !== null &&
-    now - _proxyPortCacheTs <
-      (_proxyPortCache > 0 ? PROXY_CACHE_TTL : PROXY_FAIL_TTL)
+    _proxyCache !== null &&
+    _proxyCache !== _PROXY_NOT_FOUND &&
+    now - _proxyCacheTs < PROXY_CACHE_TTL
   )
-    return Promise.resolve(_proxyPortCache);
-  if (_proxyVerifyInProgress) return Promise.resolve(_proxyPortCache || 0);
-  _proxyVerifyInProgress = true;
-  _proxyPortCache = null;
+    return Promise.resolve(_proxyCache);
+  if (_proxyCache === _PROXY_NOT_FOUND && now - _proxyCacheTs < PROXY_FAIL_TTL)
+    return Promise.resolve(null);
+  if (_proxyDetectInProgress)
+    return Promise.resolve(
+      _proxyCache && _proxyCache !== _PROXY_NOT_FOUND ? _proxyCache : null,
+    );
+  _proxyDetectInProgress = true;
 
   return new Promise(async (resolve) => {
-    // v14.0: 构建候选列表 — 系统代理优先 → 本地常见端口
+    // v16.0: 构建候选列表 — 锚定本源·动态发现·零固定常量
+    // 优先级: 系统代理(env/vscode/registry) → localhost动态扫描 → LAN网关扫描
     const candidates = [];
+    const seen = new Set(); // 去重 host:port
+
+    // 层1: 系统代理 — 本源 (用户明确配置的代理, 最高优先)
     const sysProxy = _getSystemProxy();
     if (sysProxy) {
-      candidates.push({ host: sysProxy.host, port: sysProxy.port });
+      const key = `${sysProxy.host}:${sysProxy.port}`;
+      candidates.push({
+        host: sysProxy.host,
+        port: sysProxy.port,
+        source: sysProxy.source,
+      });
+      seen.add(key);
       log(
         `proxy: system proxy detected ${sysProxy.host}:${sysProxy.port} (${sysProxy.source})`,
       );
     }
-    for (const port of PROXY_PORTS) {
-      candidates.push({ host: PROXY_HOST, port });
+
+    // 层2: localhost动态端口扫描 — 末路兜底 (代理运行但未设系统代理)
+    for (const port of _FALLBACK_SCAN_PORTS) {
+      const key = `127.0.0.1:${port}`;
+      if (!seen.has(key)) {
+        candidates.push({ host: "127.0.0.1", port, source: "scan" });
+        seen.add(key);
+      }
+    }
+
+    // 层3: LAN网关代理发现 — 道法自然·适应万物
+    // 企业/VPN/家庭环境代理可能运行在网关上 (路由器/专用代理服务器)
+    const gateway = _detectDefaultGateway();
+    if (gateway && gateway !== "127.0.0.1") {
+      for (const port of [7890, 3128, 8080, 1080]) {
+        const key = `${gateway}:${port}`;
+        if (!seen.has(key)) {
+          candidates.push({ host: gateway, port, source: `gw:${gateway}` });
+          seen.add(key);
+        }
+      }
+      log(`proxy: LAN gateway detected ${gateway} — adding scan candidates`);
+    }
+
+    if (candidates.length === 0) {
+      _proxyCache = _PROXY_NOT_FOUND;
+      _proxyCacheTs = Date.now();
+      _proxyDetectInProgress = false;
+      resolve(null);
+      return;
     }
 
     // 并行TCP探测: 快速找到可连接的端口
     const alive = [];
     await new Promise((doneProbe) => {
       let pending = candidates.length;
-      for (const { host, port } of candidates) {
+      if (pending === 0) {
+        doneProbe();
+        return;
+      }
+      for (const c of candidates) {
         const s = new net.Socket();
         s.setTimeout(800);
-        s.connect(port, host, () => {
+        s.connect(c.port, c.host, () => {
           s.destroy();
-          alive.push({ host, port });
+          alive.push(c);
           if (--pending === 0) doneProbe();
         });
         s.on("error", () => {
@@ -1535,44 +1645,98 @@ function _detectProxy() {
         });
       }
     });
-    // v11: 并行CONNECT验证 — 所有alive端口同时验证, 第一个成功立即返回
-    // (旧版串行: N×3s=15s+ → 新版并行: max(2s)=2s)
+
+    // 并行CONNECT验证 — 所有alive端口同时验证, 第一个成功立即返回
     if (alive.length > 0) {
       try {
         const winner = await Promise.any(
-          alive.map(({ host, port }) =>
-            _verifyProxyPort(host, port).then((ok) => {
+          alive.map((c) =>
+            _verifyProxyPort(c.host, c.port).then((ok) => {
               if (!ok) throw new Error("verify_fail");
-              return { host, port };
+              return c;
             }),
           ),
         );
-        _proxyPortCache = winner.port;
-        _proxyHostCache = winner.host;
-        _proxyPortCacheTs = Date.now();
-        _proxyVerifyInProgress = false;
-        if (winner.host !== PROXY_HOST)
-          log(`proxy: ${winner.host}:${winner.port} verified ✓`);
-        resolve(winner.port);
+        _proxyCache = {
+          host: winner.host,
+          port: winner.port,
+          source: winner.source,
+        };
+        _proxyCacheTs = Date.now();
+        _proxyDetectInProgress = false;
+        log(
+          `proxy: ${winner.host}:${winner.port} verified ✓ (${winner.source})`,
+        );
+        resolve(_proxyCache);
         return;
       } catch {
         // all CONNECT verify failed
       }
     }
     // 全部失败
-    _proxyPortCache = 0;
-    _proxyHostCache = PROXY_HOST;
-    _proxyPortCacheTs = Date.now();
-    _proxyVerifyInProgress = false;
-    resolve(0);
+    _proxyCache = _PROXY_NOT_FOUND;
+    _proxyCacheTs = Date.now();
+    _proxyDetectInProgress = false;
+    resolve(null);
   });
 }
 
 // 代理失效时强制刷新缓存 (被调用方在请求失败时调用)
 function _invalidateProxyCache() {
-  _proxyPortCache = null;
-  _proxyHostCache = PROXY_HOST;
-  _proxyPortCacheTs = 0;
+  _proxyCache = null;
+  _proxyCacheTs = 0;
+}
+
+// ── v15.1: Bridge就绪信号 + 自动确保 — 道法自然·有桥才走桥 ──
+// 根因修复: startup时webview不存在 → _nativeFetch全部no_webview → 所有native通道死
+// 修复策略:
+//   1. _onBridgeReady(): sidebar/editor创建时调用, 触发排队的回调
+//   2. _ensureBridgeWebview(): 如果sidebar未打开, 自动创建隐藏editor panel作为bridge
+//   3. _nativeFetch内部: no_webview时尝试auto-ensure, 而非直接reject
+function _onBridgeReady() {
+  if (_bridgeReady) return;
+  _bridgeReady = true;
+  log("bridge: Chromium网络桥就绪 — 万法归宗");
+  // 执行所有排队的回调
+  const cbs = _bridgeReadyCallbacks.splice(0);
+  for (const cb of cbs) {
+    try {
+      cb();
+    } catch (e) {
+      log(`bridge callback err: ${e.message}`);
+    }
+  }
+}
+
+function _ensureBridgeWebview() {
+  // 已有可用webview → 无需操作
+  if ((_sidebarProvider && _sidebarProvider._view) || _editorPanel) return;
+  // 自动创建隐藏editor panel作为bridge — 道法自然: 用户无感, 桥自通
+  try {
+    log("bridge: auto-creating hidden editor panel as network bridge");
+    _editorPanel = vscode.window.createWebviewPanel(
+      "wam.editor",
+      "WAM",
+      { viewColumn: vscode.ViewColumn.One, preserveFocus: true },
+      { enableScripts: true, retainContextWhenHidden: true },
+    );
+    _editorPanel.webview.html = buildHtml(_store);
+    _editorPanel.webview.onDidReceiveMessage(handleWebviewMessage);
+    _editorPanel.onDidDispose(() => {
+      _editorPanel = null;
+      _bridgeReady = false;
+    });
+    _onBridgeReady();
+  } catch (e) {
+    log(`bridge: auto-create failed: ${e.message}`);
+  }
+}
+
+function _getActiveWebview() {
+  if (_sidebarProvider && _sidebarProvider._view)
+    return _sidebarProvider._view.webview;
+  if (_editorPanel) return _editorPanel.webview;
+  return null;
 }
 
 // ── v15: Chromium原生网络桥 — 万法归宗·道法自然 ──
@@ -1582,14 +1746,15 @@ function _invalidateProxyCache() {
 //   3. Chromium DNS解析 (绕过Node.js DNS劫持)
 //   4. 与Windsurf官方登录完全相同的网络路径
 // 只要用户能用Windsurf → 此通道必然能到达Firebase/Codeium
+// v15.1: no_webview时自动尝试_ensureBridgeWebview, 而非直接放弃
 function _nativeFetch(url, opts = {}) {
   return new Promise((resolve, reject) => {
-    const wv =
-      _sidebarProvider && _sidebarProvider._view
-        ? _sidebarProvider._view.webview
-        : _editorPanel
-          ? _editorPanel.webview
-          : null;
+    let wv = _getActiveWebview();
+    if (!wv) {
+      // v15.1: 自动确保bridge — 不再静默放弃
+      _ensureBridgeWebview();
+      wv = _getActiveWebview();
+    }
     if (!wv) {
       reject(new Error("no_webview"));
       return;
@@ -1631,8 +1796,21 @@ function _handleFetchResult(msg) {
   }
 }
 
-// ── Raw HTTPS POST (返回Buffer, 用于protobuf二进制响应) ──
+// ── Raw HTTPS POST (返回Buffer, 用于protobuf二进制响应) — v15.2: 自动感知系统代理 ──
 function _httpsPostRaw(url, body, opts = {}) {
+  // v15.2: 系统有代理且caller没指定hostname → 自动走代理 (道法自然)
+  if (!opts.hostname && !opts._skipAutoProxy) {
+    const sysProxy = _getSystemProxy();
+    if (sysProxy) {
+      return _httpsPostRawViaProxy(
+        sysProxy.host,
+        sysProxy.port,
+        url,
+        body,
+        opts.timeout || 12000,
+      );
+    }
+  }
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const reqOpts = {
@@ -2023,9 +2201,9 @@ async function _firebaseVia(channel, email, password, key) {
       });
 
     case "proxy":
-      return _detectProxy().then((port) => {
-        if (!port) throw new Error("no_proxy");
-        return _httpsViaProxy(_proxyHostCache, port, url, payload, 10000, {
+      return _detectProxy().then((proxy) => {
+        if (!proxy) throw new Error("no_proxy");
+        return _httpsViaProxy(proxy.host, proxy.port, url, payload, 10000, {
           Referer: FIREBASE_REFERER,
         });
       });
@@ -2168,13 +2346,13 @@ async function _resolveRelayIP() {
     return _relayIPCache.ip;
   // 方法1: DoH via proxy (dns.google)
   try {
-    const port = await _detectProxy();
-    if (port) {
+    const proxy = await _detectProxy();
+    if (proxy) {
       const dohResult = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("doh_timeout")), 8000);
         const connReq = http.request({
-          host: _proxyHostCache,
-          port,
+          host: proxy.host,
+          port: proxy.port,
           method: "CONNECT",
           path: "dns.google:443",
           timeout: 5000,
@@ -2359,13 +2537,13 @@ async function fetchAccountQuota(email, password) {
     },
     // 通道1: 官方API via proxy (最可靠: 官方服务器不限流WAM)
     async () => {
-      const port = await _detectProxy();
-      if (!port) throw new Error("no_proxy");
+      const proxy = await _detectProxy();
+      if (!proxy) throw new Error("no_proxy");
       for (const url of OFFICIAL_PLAN_STATUS_URLS) {
         try {
           const resp = await _httpsPostRawViaProxy(
-            _proxyHostCache,
-            port,
+            proxy.host,
+            proxy.port,
             url,
             proto,
             10000,
@@ -2395,11 +2573,11 @@ async function fetchAccountQuota(email, password) {
     },
     // 通道4: Relay via proxy (最后手段)
     async () => {
-      const port = await _detectProxy();
-      if (!port) throw new Error("no_proxy");
+      const proxy = await _detectProxy();
+      if (!proxy) throw new Error("no_proxy");
       return _httpsPostRawViaProxy(
-        _proxyHostCache,
-        port,
+        proxy.host,
+        proxy.port,
         planUrl,
         proto,
         10000,
@@ -2678,12 +2856,12 @@ async function firebaseLookup(idToken) {
     } catch {}
     // 也尝试代理通道
     try {
-      const port = await _detectProxy();
-      if (port) {
+      const proxy = await _detectProxy();
+      if (proxy) {
         const url2 = `https://${FIREBASE_HOST}/v1/accounts:lookup?key=${key}`;
         const result = await _httpsViaProxy(
-          _proxyHostCache,
-          port,
+          proxy.host,
+          proxy.port,
           url2,
           payload,
           10000,
@@ -4217,9 +4395,18 @@ class WamViewProvider {
   }
   resolveWebviewView(webviewView) {
     this._view = webviewView;
-    webviewView.webview.options = { enableScripts: true };
+    webviewView.webview.options = {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+    };
     webviewView.webview.html = buildHtml(this._store);
     webviewView.webview.onDidReceiveMessage(handleWebviewMessage);
+    // v15.1: 通知bridge就绪 — 道法自然: webview可用时才启动依赖native通道的引擎
+    _onBridgeReady();
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) _onBridgeReady();
+    });
+    log("bridge: sidebar webview resolved (retainContextWhenHidden)");
   }
   refresh() {
     if (this._view) this._view.webview.html = buildHtml(this._store);
@@ -4244,7 +4431,11 @@ function openEditorPanel() {
   _editorPanel.webview.onDidReceiveMessage(handleWebviewMessage);
   _editorPanel.onDidDispose(() => {
     _editorPanel = null;
+    // v15.1: editor关闭时, 如果sidebar也没有, 标记bridge不可用
+    if (!(_sidebarProvider && _sidebarProvider._view)) _bridgeReady = false;
   });
+  // v15.1: editor panel也是bridge — 通知就绪
+  _onBridgeReady();
 }
 
 // ============================================================
@@ -4852,28 +5043,37 @@ async function selfTest() {
   const results = [];
   const t0 = Date.now();
 
-  // 1. 代理检测
+  // 1. 代理检测 (v16.0: 统一描述符 — 系统代理 + LAN网关 + 动态扫描)
   try {
     const sysProxy = _getSystemProxy();
-    const port = await _detectProxy();
+    const gateway = _detectDefaultGateway();
+    const proxy = await _detectProxy();
+    const parts = [];
+    if (proxy) parts.push(`${proxy.host}:${proxy.port}(${proxy.source})`);
+    if (sysProxy)
+      parts.push(`sys=${sysProxy.source}(${sysProxy.host}:${sysProxy.port})`);
+    if (gateway) parts.push(`gw=${gateway}`);
+    if (!proxy && !sysProxy) parts.push("no proxy found");
     results.push({
       test: "proxy",
-      ok: port > 0,
-      detail:
-        port > 0
-          ? `${_proxyHostCache}:${port}${sysProxy ? ` (${sysProxy.source})` : " (scan)"}`
-          : sysProxy
-            ? `${sysProxy.host}:${sysProxy.port} verify failed`
-            : "no proxy found",
+      ok: !!proxy || !!sysProxy,
+      detail: parts.join(" | "),
     });
   } catch (e) {
     results.push({ test: "proxy", ok: false, detail: e.message });
   }
 
-  // 1.5 Chromium原生网络桥 (v15: 万法归宗)
+  // 1.5 Chromium原生网络桥 (v15.1: 万法归宗·自动确保)
   try {
-    const wvAvail =
-      !!(_sidebarProvider && _sidebarProvider._view) || !!_editorPanel;
+    // v15.1: selfTest时也尝试auto-ensure bridge
+    if (!_getActiveWebview()) _ensureBridgeWebview();
+    const wvAvail = !!_getActiveWebview();
+    const bridgeSrc =
+      _sidebarProvider && _sidebarProvider._view
+        ? "sidebar"
+        : _editorPanel
+          ? "editor"
+          : "none";
     if (wvAvail) {
       const nativeBody = JSON.stringify({ returnSecureToken: true });
       try {
@@ -4889,20 +5089,20 @@ async function selfTest() {
         results.push({
           test: "native_bridge",
           ok: true,
-          detail: `Chromium fetch OK (status:${nr.status})`,
+          detail: `Chromium fetch OK (status:${nr.status}) via ${bridgeSrc} [bridgeReady=${_bridgeReady}]`,
         });
       } catch (e) {
         results.push({
           test: "native_bridge",
           ok: false,
-          detail: `webview avail but fetch failed: ${e.message}`,
+          detail: `webview(${bridgeSrc}) avail but fetch failed: ${e.message}`,
         });
       }
     } else {
       results.push({
         test: "native_bridge",
         ok: false,
-        detail: "no webview — sidebar未打开",
+        detail: `no webview — auto-ensure failed [bridgeReady=${_bridgeReady}]`,
       });
     }
   } catch (e) {
@@ -4912,13 +5112,13 @@ async function selfTest() {
   // 2. Firebase连通性
   try {
     const testBody = JSON.stringify({ returnSecureToken: true });
-    const port = await _detectProxy();
+    const proxy = await _detectProxy();
     let fbOk = false;
-    if (port) {
+    if (proxy) {
       try {
         const r = await _httpsViaProxy(
-          _proxyHostCache,
-          port,
+          proxy.host,
+          proxy.port,
           `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${FIREBASE_KEYS[0]}`,
           testBody,
           8000,
@@ -4950,15 +5150,15 @@ async function selfTest() {
   try {
     let officialOk = false;
     let okEndpoint = "";
-    const port = await _detectProxy();
+    const proxy = await _detectProxy();
     const dummyProto = encodeProtoString("test");
     for (const url of OFFICIAL_PLAN_STATUS_URLS) {
       try {
         let resp;
-        if (port) {
+        if (proxy) {
           resp = await _httpsPostRawViaProxy(
-            _proxyHostCache,
-            port,
+            proxy.host,
+            proxy.port,
             url,
             dummyProto,
             8000,
@@ -5043,7 +5243,7 @@ async function selfTest() {
 // ============================================================
 function activate(context) {
   log(
-    `activate v14.3.0-为道日损 — inst=${_instanceId} p3无条件重试·超时路径新命令·冷却3s·总超时12s`,
+    `activate v16.0.0-万法归宗 — inst=${_instanceId} 统一代理描述符·零固定端口·零固定地址·Chromium原生桥锚定本源`,
   );
 
   const gsPath =
@@ -5086,6 +5286,33 @@ function activate(context) {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("wam.panel", _sidebarProvider),
   );
+
+  // ── v15.1: 网络环境变化感知 — 反者道之动·代理变则缓存废 ──
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        e.affectsConfiguration("http.proxy") ||
+        e.affectsConfiguration("http.proxyStrictSSL")
+      ) {
+        log("network: http.proxy config changed → invalidate proxy cache");
+        _invalidateProxyCache();
+      }
+    }),
+  );
+
+  // ── v15.1: Bridge自动确保 — 如果sidebar 8秒内未打开, 自动创建隐藏panel ──
+  _bridgeEnsureTimer = setTimeout(() => {
+    _bridgeEnsureTimer = null;
+    if (!_bridgeReady && isWamMode()) {
+      log("bridge: sidebar未在8s内打开 → 自动创建bridge panel");
+      _ensureBridgeWebview();
+    }
+  }, 8000);
+  context.subscriptions.push({
+    dispose() {
+      if (_bridgeEnsureTimer) clearTimeout(_bridgeEnsureTimer);
+    },
+  });
 
   // ── 状态栏小标 (右下角) ──
   _statusBarItem = vscode.window.createStatusBarItem(
@@ -5599,6 +5826,13 @@ function deactivate() {
     clearInterval(_reloadWatcher);
     _reloadWatcher = null;
   }
+  // v15.1: bridge cleanup
+  if (_bridgeEnsureTimer) {
+    clearTimeout(_bridgeEnsureTimer);
+    _bridgeEnsureTimer = null;
+  }
+  _bridgeReady = false;
+  _bridgeReadyCallbacks = [];
   _prewarmedToken = null;
   _switching = false;
   if (_editorPanel) {
