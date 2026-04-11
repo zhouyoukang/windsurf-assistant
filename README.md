@@ -2,7 +2,7 @@
 
 > 道可道，非常道。名可名，非常名。
 
-**WAM v17.0** — 道法自然 · 零硬编码 · 动态配置 · 跨平台自适应 · 所有Windsurf环境 · 所有代理环境
+**WAM v17.1** — 道法自然 · 零硬编码 · 47常量动态配置 · 跨平台自适应 · 所有Windsurf环境 · 所有代理环境
 
 ---
 
@@ -10,9 +10,9 @@
 
 安装后，Windsurf 编码时额度耗尽会 **自动无感切换到下一个可用账号**，编码体验零中断。
 
-### v17.0 核心突破: 从根本底层去除一切硬编码
+### v17.1 核心突破: 47个常量零残留
 
-**审视插件本源，从根本底层去除各个无意义确定性编码。** 28个硬编码常量全部替换为动态getter函数，通过VS Code settings (`wam.*`) 可覆盖一切参数。真正实现彻底的适配：
+**审视插件本源，从根本底层去除各个无意义确定性编码。** 47个硬编码常量/魔法数字全部替换为动态getter函数，通过VS Code settings (`wam.*`) 可覆盖一切参数。真正实现彻底的适配：
 
 | 维度 | 机制 | 配置入口 |
 |------|------|---------|
@@ -23,13 +23,13 @@
 | **API端点** | `_getOfficialPlanStatusUrls()` 可追加 | `wam.officialEndpoints` |
 | **注入命令** | `_getInjectCommands()` 3命令候选可覆盖 | `wam.injectCommands` |
 | **中继** | `_getRelayHost()` 占位符自动禁用 | `wam.relayHost` |
-| **时序阈值** | 14个 getter (monitor/scan/burst/cooldown等) | `wam.monitorIntervalMs` 等 |
+| **时序阈值** | 33个 getter (monitor/scan/burst/cooldown/pool/proxy等) | `wam.monitorIntervalMs` 等 |
 | **电脑环境** | 仅依赖 Node.js 标准库 | — |
 | **DNS环境** | DoH双路径 (Google + Cloudflare) | — |
 
 ### 核心能力
 
-- **动态配置层** — 28个常量全部getter化，`_cfg(key, default)` 读 VS Code settings，0/false作为合法值
+- **动态配置层** — 47个常量全部getter化，`_cfg(key, default)` 读 VS Code settings，0/false作为合法值
 - **跨平台自适应** — Windows `%APPDATA%` / macOS `~/Library` / Linux `~/.config` 自动检测
 - **4阶段递进注入** — P1快探3s → P2收割4s → P3无条件重试4s → P4备选命令5s
 - **Token活水池** — 后台持续预热所有账号Token，切号必然cache HIT，切换<3s
