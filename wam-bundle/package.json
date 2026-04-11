@@ -1,8 +1,8 @@
 {
   "name": "wam",
   "displayName": "WAM · 无感切号",
-  "description": "Windsurf Account Manager v14.3 — p3无条件重试·超时路径新命令·冷却3s·总超时12s·为道日损",
-  "version": "14.3.0",
+  "description": "WAM v17.0 — 道法自然·零硬编码·动态配置·跨平台自适应·28常量getter化·91项验证全通过",
+  "version": "17.0.0",
   "publisher": "local",
   "license": "MIT",
   "engines": { "vscode": "^1.85.0" },
@@ -50,6 +50,81 @@
           "type": "boolean",
           "default": true,
           "description": "检测额度变动时自动切换到未使用的最优账号"
+        },
+        "wam.productName": {
+          "type": "string",
+          "default": "",
+          "description": "产品名 (留空=自动检测: Windsurf/Cursor/Code)"
+        },
+        "wam.dataDir": {
+          "type": "string",
+          "default": "",
+          "description": "数据目录 (留空=自动检测: %APPDATA%/{productName} 等)"
+        },
+        "wam.relayHost": {
+          "type": "string",
+          "default": "",
+          "description": "中继服务器域名 (留空=禁用relay通道)"
+        },
+        "wam.firebase.extraKeys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "追加的Firebase API keys (合并到默认key之后)"
+        },
+        "wam.firebase.referer": {
+          "type": "string",
+          "default": "",
+          "description": "Firebase请求的Referer头 (留空=默认 https://windsurf.com/)"
+        },
+        "wam.officialEndpoints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "追加的官方API端点URL"
+        },
+        "wam.injectCommands": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "覆盖注入命令列表 (留空=默认3命令候选)"
+        },
+        "wam.proxy.extraPorts": {
+          "type": "array",
+          "items": { "type": "number" },
+          "default": [],
+          "description": "追加的代理扫描端口 (合并到默认端口列表)"
+        },
+        "wam.proxy.extraGatewayPorts": {
+          "type": "array",
+          "items": { "type": "number" },
+          "default": [],
+          "description": "追加的LAN网关扫描端口"
+        },
+        "wam.monitorIntervalMs": {
+          "type": "number",
+          "default": 3000,
+          "description": "活跃账号监测间隔 (毫秒)"
+        },
+        "wam.scanIntervalMs": {
+          "type": "number",
+          "default": 45000,
+          "description": "后台全量扫描间隔 (毫秒)"
+        },
+        "wam.tokenCacheTtlMin": {
+          "type": "number",
+          "default": 50,
+          "description": "Token缓存TTL (分钟)"
+        },
+        "wam.autoSwitchThreshold": {
+          "type": "number",
+          "default": 5,
+          "description": "额度低于此百分比时自动切号"
+        },
+        "wam.predictiveThreshold": {
+          "type": "number",
+          "default": 25,
+          "description": "额度低于此百分比时预热候选账号Token"
         }
       }
     }

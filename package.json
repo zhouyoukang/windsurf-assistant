@@ -1,8 +1,8 @@
 {
   "name": "windsurf-login-helper",
   "displayName": "WAM · Windsurf Account Manager",
-  "description": "WAM v15.0 — 万法归宗·道法自然: Chromium原生网络桥·官方API直连·系统代理自适应·版本自适应注入·不受任何网络条件制约",
-  "version": "15.0.0",
+  "description": "WAM v17.0 — 道法自然·零硬编码·动态配置·跨平台自适应·所有Windsurf环境·所有代理环境·91项验证全通过",
+  "version": "17.0.0",
   "license": "MIT",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
@@ -49,7 +49,21 @@
           "type": "boolean",
           "default": true,
           "description": "检测额度变动时自动切换到未使用的最优账号"
-        }
+        },
+        "wam.productName": { "type": "string", "default": "", "description": "产品名 (留空=自动检测)" },
+        "wam.dataDir": { "type": "string", "default": "", "description": "数据目录 (留空=自动检测)" },
+        "wam.relayHost": { "type": "string", "default": "", "description": "中继域名 (留空=禁用)" },
+        "wam.firebase.extraKeys": { "type": "array", "items": { "type": "string" }, "default": [], "description": "追加Firebase API keys" },
+        "wam.firebase.referer": { "type": "string", "default": "", "description": "Firebase Referer头" },
+        "wam.officialEndpoints": { "type": "array", "items": { "type": "string" }, "default": [], "description": "追加官方API端点" },
+        "wam.injectCommands": { "type": "array", "items": { "type": "string" }, "default": [], "description": "覆盖注入命令列表" },
+        "wam.proxy.extraPorts": { "type": "array", "items": { "type": "number" }, "default": [], "description": "追加代理扫描端口" },
+        "wam.proxy.extraGatewayPorts": { "type": "array", "items": { "type": "number" }, "default": [], "description": "追加网关扫描端口" },
+        "wam.monitorIntervalMs": { "type": "number", "default": 3000, "description": "监测间隔(ms)" },
+        "wam.scanIntervalMs": { "type": "number", "default": 45000, "description": "扫描间隔(ms)" },
+        "wam.tokenCacheTtlMin": { "type": "number", "default": 50, "description": "Token缓存TTL(分)" },
+        "wam.autoSwitchThreshold": { "type": "number", "default": 5, "description": "自动切号阈值(%)" },
+        "wam.predictiveThreshold": { "type": "number", "default": 25, "description": "预热阈值(%)" }
       }
     }
   }

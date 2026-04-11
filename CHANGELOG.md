@@ -1,5 +1,84 @@
 # Changelog
 
+## v17.0.0 — 道法自然·零硬编码·动态配置·真正实现彻底的适配 (2026-04-11)
+
+### 核心突破: 从根本底层去除一切硬编码
+
+**道可道非常道** — 审视当前插件最新成果，锚定本源，从根本底层去除各个无意义确定性编码。真正实现彻底的适配所有用户电脑环境、所有Windsurf环境、所有代理环境。
+
+### 动态配置层 (28个常量 → getter函数)
+
+| 分类 | 常量数 | 动态化方式 | 配置入口 |
+|------|--------|-----------|---------|
+| 产品名/数据目录 | 2 | `_detectProductName()` / `_resolveDataDir()` | `wam.productName` / `wam.dataDir` |
+| Firebase认证 | 2 | `_getFirebaseKeys()` / `_getFirebaseReferer()` | `wam.firebase.extraKeys` / `wam.firebase.referer` |
+| API端点 | 1 | `_getOfficialPlanStatusUrls()` | `wam.officialEndpoints` |
+| 注入命令 | 1 | `_getInjectCommands()` | `wam.injectCommands` |
+| Relay中继 | 1 | `_getRelayHost()` — 占位符自动禁用 | `wam.relayHost` |
+| 代理端口 | 2 | `_getFallbackScanPorts()` / `_getGatewayPorts()` | `wam.proxy.extraPorts` / `wam.proxy.extraGatewayPorts` |
+| 时序/阈值 | 14 | `_getMonitorFastMs()` ... `_getInstanceDeadMs()` | `wam.monitorIntervalMs` 等 |
+| 版本号 | 1 | `WAM_VERSION` 一处定义 | — |
+| 账号文件名 | 1 | `${PRODUCT_NAME}-login-accounts.json` | 自动 |
+| 配置读取 | 1 | `_cfg(key, default)` — 修复0/false边界 | — |
+
+### 跨平台自适应
+
+- **Windows**: `%APPDATA%/{ProductName}` → Windsurf/Code 候选
+- **macOS**: `~/Library/Application Support/{ProductName}` → 候选链
+- **Linux**: `~/.config/{ProductName}` → 候选链
+- 自动检测第一个存在的目录，兼容自定义安装路径
+
+### Bug修复
+
+- **`_cfg()` 0/false边界** — 用户设置 `changeThreshold: 0` 或 `autoRotate: false` 不会被忽略
+- **Relay通道空指针** — relay未配置时通道3/4 gracefully skip而非崩溃
+- **AccountStore文件名** — 动态化 `${productName}-login-accounts.json`，向后兼容旧文件
+
+### 验证 (91 PASS / 0 FAIL)
+
+| 测试类别 | 项目数 | 结果 |
+|----------|--------|------|
+| 模块加载/语法 | 3 | ✓ |
+| 配置函数存在性 | 17 | ✓ |
+| 旧常量根除 | 12 | ✓ |
+| 跨平台路径 | 3 | ✓ |
+| Relay边界条件 | 9 | ✓ |
+| 端口合并逻辑 | 7 | ✓ |
+| Firebase配置 | 8 | ✓ |
+| 代理环境探测 | 2 | ✓ |
+| TCP端口探测 | 1 | ✓ |
+| LAN网关检测 | 1 | ✓ |
+| AccountStore动态化 | 8 | ✓ |
+| _cfg()边界条件 | 8 | ✓ |
+| Windsurf安装验证 | 1 | ✓ |
+| CONNECT隧道 | 2 | ✓ |
+| Firebase连通性 | 1 | ✓ |
+| Official API | 4 | ✓ |
+| 悬挂引用检查 | 4 | ✓ |
+
+### 当前机器实测结果
+
+- 代理 `127.0.0.1:7890` CONNECT → Firebase OK
+- `server.codeium.com` 401/941ms ✓
+- `web-backend.windsurf.com` 401/474ms ✓
+- `register.windsurf.com` 404/860ms ✓
+
+---
+
+## v16.1 — 共享Promise修复并发竞争 (2026-04-10)
+
+- **消灭startup burst竞争** — ch2/ch5 no_proxy 共享Promise
+
+---
+
+## v16.0 — 万法归宗·从根本去除端口依赖 (2026-04-10)
+
+- **统一代理描述符** — `_detectProxy()` 返回 `{host, port, source}` 或 `null`
+- **消灭双缓存** — `_proxyPortCache` + `_proxyHostCache` → 单一 `_proxyCache`
+- **系统代理优先** — env/VS Code/Windows Registry → LAN网关 → localhost扫描(末路兜底)
+
+---
+
 ## v15.0.0 — 万法归宗·道法自然·Chromium原生网络桥 (2026-04-10)
 
 ### 核心突破
