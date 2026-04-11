@@ -1,8 +1,8 @@
 {
   "name": "windsurf-login-helper",
   "displayName": "WAM · Windsurf Account Manager",
-  "description": "WAM v17.1 — 道法自然·零硬编码·动态配置·跨平台自适应·47常量getter化·零残留",
-  "version": "17.1.0",
+  "description": "WAM v17.3 — 反者道之动·v10.2额度根因修复·proto3零值实证·D/W独立·万法归宗",
+  "version": "17.3.0",
   "license": "MIT",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],

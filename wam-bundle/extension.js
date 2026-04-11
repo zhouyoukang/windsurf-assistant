@@ -1,13 +1,8 @@
-// WAM v17.2 — 为道日损·72配置项零硬编码·唯变所适·道可道非常道·适配一切
+// WAM v15.1 — 万法归宗·道法自然: 显式TLS隧道·自愈网络桥·全局断路器·Firebase限流感知
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
 // 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
 // v15.0: Webview fetch()走Chromium渲染进程 — 与Windsurf官方登录完全同一网络路径
-// v15.1: Bridge生命周期管理 — startup自动创建·sidebar retainContext·网络变化感知·proxy缓存联动
-// v15.2: 道可道非常道 — _httpsPost/_httpsPostRaw自动感知系统代理·LAN网关自动发现
-// v16.0: 万法归宗 — 统一代理描述符·消灭双全局状态
-// v17.0: 道法自然 — 28个硬编码常量getter化·_cfg()修复·跨平台自适应
-// v17.1: 去芜留菁 — 剩余19个常量(proxy/pool/quota/purge/cooldown)全部getter化·47常量零残留
-// 锚定本源: Chromium原生桥 > 系统代理感知 > 直连 > 动态端口发现(末路兜底)
+// 只要用户能官方登录Windsurf → 此通道必然可达Firebase/Codeium · 道法自然
 const vscode = require("vscode");
 const crypto = require("crypto");
 const https = require("https");
@@ -18,181 +13,30 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-// ── 配置 · 道法自然 — 一切从环境动态获取, 设置可覆盖, 零硬编码 ──
-
-// ── 产品名自适应: 检测实际IDE产品名 (Windsurf/Cursor/VSCode fork等) ──
-function _detectProductName() {
-  // 优先: VS Code settings 显式配置
-  try {
-    const cfgName = vscode.workspace
-      .getConfiguration("wam")
-      .get("productName", "");
-    if (cfgName) return cfgName;
-  } catch {}
-  // 次优: vscode.env.appName (运行时真实产品名)
-  try {
-    if (vscode.env.appName) {
-      // appName 可能是 "Windsurf", "Visual Studio Code", "Cursor" 等
-      const name = vscode.env.appName.split(/\s/)[0]; // 取第一个词
-      if (name && name.length > 1) return name;
-    }
-  } catch {}
-  return "Windsurf"; // 兜底默认
-}
-
-// ── 数据目录自适应: 跨平台 + 自定义安装 ──
-function _resolveDataDir(productName) {
-  // 优先: VS Code settings 显式配置
-  try {
-    const cfgDir = vscode.workspace.getConfiguration("wam").get("dataDir", "");
-    if (cfgDir && fs.existsSync(cfgDir)) return cfgDir;
-  } catch {}
-  // 按平台构建候选路径列表
-  const candidates = [];
-  const home = os.homedir();
-  switch (process.platform) {
-    case "win32": {
-      const appdata =
-        process.env.APPDATA || path.join(home, "AppData", "Roaming");
-      candidates.push(path.join(appdata, productName));
-      // 兼容: 可能叫 "Windsurf" 即使 productName 检测不同
-      if (productName !== "Windsurf")
-        candidates.push(path.join(appdata, "Windsurf"));
-      candidates.push(path.join(appdata, "Code")); // VS Code 兜底
-      break;
-    }
-    case "darwin": {
-      candidates.push(
-        path.join(home, "Library", "Application Support", productName),
-      );
-      if (productName !== "Windsurf")
-        candidates.push(
-          path.join(home, "Library", "Application Support", "Windsurf"),
-        );
-      candidates.push(
-        path.join(home, "Library", "Application Support", "Code"),
-      );
-      break;
-    }
-    default: {
-      // linux
-      candidates.push(path.join(home, ".config", productName));
-      if (productName !== "Windsurf")
-        candidates.push(path.join(home, ".config", "Windsurf"));
-      candidates.push(path.join(home, ".config", "Code"));
-      break;
-    }
-  }
-  // 返回第一个存在的
-  for (const dir of candidates) {
-    try {
-      if (fs.existsSync(dir)) return dir;
-    } catch {}
-  }
-  return candidates[0]; // 返回首选即使不存在
-}
-
-// ── 延迟初始化: activate()时调用一次, 之后全局可用 ──
-let PRODUCT_NAME = "Windsurf"; // activate()时由_initConfig()设置
-let DATA_DIR = ""; // 产品数据根目录 (如 %APPDATA%/Windsurf)
-
-// ── 配置读取辅助: 从wam.*设置读取, 带类型安全默认值 ──
-function _cfg(key, defaultVal) {
-  try {
-    const val = vscode.workspace.getConfiguration("wam").get(key);
-    // 道法自然: 0/false是合法值, 只拒绝undefined/null; 空字符串仅在默认值非字符串时回退
-    if (val === undefined || val === null) return defaultVal;
-    if (val === "" && typeof defaultVal !== "string") return defaultVal;
-    return val;
-  } catch {}
-  return defaultVal;
-}
-
-// ── Firebase配置 — 可通过wam.firebase.*覆盖 ──
-function _getFirebaseKeys() {
-  const extra = _cfg("firebase.extraKeys", []);
-  const base = ["AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"];
-  return Array.isArray(extra) && extra.length > 0 ? [...base, ...extra] : base;
-}
-function _getFirebaseReferer() {
-  return _cfg("firebase.referer", "https://windsurf.com/");
-}
-const FIREBASE_HOST = "identitytoolkit.googleapis.com"; // Google标准端点, 无需适配
-
-// v16.0: 万法归宗 — 消灭一切固定端口/固定地址常量
-// 代理发现优先级: 系统代理(env/vscode/registry) > LAN网关 > localhost动态扫描
-// 端口扫描仅为末路兜底 — 真正的proxy由 _getSystemProxy() 动态获取
-const _DEFAULT_SCAN_PORTS = [
-  7890, 7897, 7891, 10808, 10809, 1080, 8118, 3128, 8080,
+// ── 配置 ──
+const FIREBASE_KEYS = ["AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"];
+const FIREBASE_REFERER = "https://windsurf.com/";
+const FIREBASE_HOST = "identitytoolkit.googleapis.com";
+const PROXY_HOST = "127.0.0.1";
+const PROXY_PORTS = [
+  7890, 7897, 7891, 10808, 10809, 20808, 20809, 1080, 2080, 8118, 8889, 1081,
+  2081, 3128, 8080, 8123, 8124, 8125, 8126, 8127, 8128, 8129, 8130, 8131, 8132,
+  8133, 8134, 8135, 8136, 8137, 8138, 8139, 8140, 8141, 8142, 8143, 8144, 8145,
+  8146, 8147, 8148, 8149, 8150, 8151, 8152, 8153,
 ];
-function _getFallbackScanPorts() {
-  const extra = _cfg("proxy.extraPorts", []);
-  const base = _DEFAULT_SCAN_PORTS;
-  if (Array.isArray(extra) && extra.length > 0) {
-    const merged = [...base];
-    for (const p of extra) {
-      if (typeof p === "number" && !merged.includes(p)) merged.push(p);
-    }
-    return merged;
-  }
-  return base;
-}
-// LAN网关扫描端口 — 同样可扩展
-const _DEFAULT_GW_PORTS = [7890, 3128, 8080, 1080];
-function _getGatewayPorts() {
-  const extra = _cfg("proxy.extraGatewayPorts", []);
-  const base = _DEFAULT_GW_PORTS;
-  if (Array.isArray(extra) && extra.length > 0) {
-    const merged = [...base];
-    for (const p of extra) {
-      if (typeof p === "number" && !merged.includes(p)) merged.push(p);
-    }
-    return merged;
-  }
-  return base;
-}
-
 // v14.0: 官方API端点 — 直连Windsurf/Codeium, 不经中继, 根治relay单点故障
-// 可通过 wam.officialEndpoints 追加自定义端点
-const _DEFAULT_PLAN_STATUS_URLS = [
+const OFFICIAL_PLAN_STATUS_URLS = [
   "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
   "https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
   "https://register.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus",
 ];
-function _getOfficialPlanStatusUrls() {
-  const extra = _cfg("officialEndpoints", []);
-  if (Array.isArray(extra) && extra.length > 0)
-    return [..._DEFAULT_PLAN_STATUS_URLS, ...extra];
-  return _DEFAULT_PLAN_STATUS_URLS;
-}
-
 // v14.0: 注入命令候选 — 版本自适应, 按优先级尝试
-// 可通过 wam.injectCommands 覆盖整个列表
-const _DEFAULT_INJECT_COMMANDS = [
+const INJECT_COMMANDS = [
   "windsurf.provideAuthTokenToAuthProvider",
   "codeium.provideAuthToken",
   "windsurf.provideAuthToken",
 ];
-function _getInjectCommands() {
-  const custom = _cfg("injectCommands", []);
-  if (Array.isArray(custom) && custom.length > 0) return custom;
-  return _DEFAULT_INJECT_COMMANDS;
-}
 let _workingInjectCmd = null; // 缓存验证成功的注入命令
-
-// ── Relay配置 — 可通过wam.relayHost覆盖, 占位符自动禁用 ──
-function _getRelayHost() {
-  const host = _cfg("relayHost", "");
-  // 占位符/空值 → 返回null, 调用方跳过relay通道
-  if (
-    !host ||
-    host === "YOUR_RELAY_HOST.example.com" ||
-    host.includes("example.com")
-  )
-    return null;
-  return host;
-}
-
 const WAM_DIR = path.join(os.homedir(), ".wam-hot");
 const TOKEN_FILE = path.join(WAM_DIR, "oneshot_token.json");
 const RESULT_FILE = path.join(WAM_DIR, "inject_result.json");
@@ -202,8 +46,7 @@ const INUSE_FILE = path.join(WAM_DIR, "inuse_marks.json");
 const RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 const RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
-// PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.1.0"; // 集中版本号 — 道法自然·一处定义
+const PURGE_INTERVAL_MS = 6 * 3600 * 1000; // 每6小时自动检查一次
 
 let _store = null;
 let _sidebarProvider = null;
@@ -215,9 +58,6 @@ let _watcher = null;
 // 只要用户能官方登录Windsurf, 此通道必然可达Firebase/Codeium
 let _fetchIdCounter = 0;
 const _fetchPending = new Map();
-let _bridgeReady = false; // v15.1: Chromium桥就绪标志 — 道法自然: 有桥才走桥
-let _bridgeReadyCallbacks = []; // v15.1: 桥就绪后执行的回调队列
-let _bridgeEnsureTimer = null; // v15.1: 自动确保桥可用的定时器
 let _switching = false;
 let _switchingStartTime = 0; // v7.3: 切号锁开始时间, 用于超时释放+手动抢占
 let _pollTimer = null;
@@ -226,209 +66,24 @@ let _lastPurgeTime = 0;
 let _mode = "wam"; // 'wam' = 切号模式 | 'official' = 官方登录模式
 const MODE_FILE = path.join(WAM_DIR, "wam_mode.json");
 
-// ── 额度查询 · 道法自然 — 所有时序/阈值/策略参数均可通过wam.*设置覆盖 ──
-// 使用方法: 在VS Code settings.json中添加 "wam.monitorIntervalMs": 5000 即可覆盖
-function _getMonitorFastMs() {
-  return _cfg("monitorIntervalMs", 3000);
-}
-function _getScanSlowMs() {
-  return _cfg("scanIntervalMs", 45000);
-}
-function _getScanBatchSize() {
-  return _cfg("scanBatchSize", 10);
-}
-function _getChangeThreshold() {
-  return _cfg("changeThreshold", 0.01);
-}
-function _getTokenCacheTtl() {
-  return _cfg("tokenCacheTtlMin", 50) * 60000;
-}
-function _getInuseCooldownMs() {
-  return _cfg("inUseCooldownMs", 120000);
-}
-function _getBurstMs() {
-  return _cfg("burstIntervalMs", 1500);
-}
-function _getBurstDuration() {
-  return _cfg("burstDurationMs", 60000);
-}
-function _getAutoSwitchThreshold() {
-  return _cfg("autoSwitchThreshold", 5);
-}
-function _getPredictiveThreshold() {
-  return _cfg("predictiveThreshold", 25);
-}
-function _getDailyResetHourUtc() {
-  return _cfg("dailyResetHourUtc", 8);
-}
-function _getWeeklyResetDay() {
-  return _cfg("weeklyResetDay", 0);
-}
-function _getWaitResetHours() {
-  return _cfg("waitResetHours", 3);
-}
-function _getInstanceHeartbeatMs() {
-  return _cfg("instanceHeartbeatMs", 30000);
-}
-function _getInstanceDeadMs() {
-  return _cfg("instanceDeadMs", 60000);
-}
-// v17.1 去芜留菁: 所有行为常量均已getter化, 零残留
-// ── 注入/清理 时序 ──
-function _getInjectFailCooldown() {
-  return _cfg("injectFailCooldownMs", 3000);
-}
-function _getPurgeIntervalMs() {
-  return _cfg("purgeIntervalMs", 21600000);
-}
-// ── 代理缓存 TTL ──
-function _getProxyCacheTtl() {
-  return _cfg("proxyCacheTtlMs", 300000);
-}
-function _getProxyFailTtl() {
-  return _cfg("proxyFailTtlMs", 30000);
-}
-// ── 实例Claims缓存 ──
-function _getClaimsCacheTtl() {
-  return _cfg("claimsCacheTtlMs", 5000);
-}
-// ── 额度查询节流 ──
-function _getQuotaMinInterval() {
-  return _cfg("quotaMinIntervalMs", 10000);
-}
-function _getQuota429Backoff() {
-  return _cfg("quota429BackoffMs", 60000);
-}
-// ── Relay IP缓存 ──
-function _getRelayIpTtl() {
-  return _cfg("relayIpTtlMs", 600000);
-}
-// ── Token活水池 ──
-function _getTokenPoolBurstMs() {
-  return _cfg("tokenPool.burstMs", 5000);
-}
-function _getTokenPoolCruiseMs() {
-  return _cfg("tokenPool.cruiseMs", 45000);
-}
-function _getTokenPoolBurstDuration() {
-  return _cfg("tokenPool.burstDurationMs", 180000);
-}
-function _getTokenPoolMargin() {
-  return _cfg("tokenPool.marginMs", 600000);
-}
-function _getPoolParallelBurst() {
-  return _cfg("tokenPool.parallelBurst", 3);
-}
-function _getPoolParallelCruise() {
-  return _cfg("tokenPool.parallelCruise", 1);
-}
-function _getPoolTempBanThreshold() {
-  return _cfg("tokenPool.tempBanThreshold", 3);
-}
-function _getPoolTempBanDuration() {
-  return _cfg("tokenPool.tempBanDurationMs", 900000);
-}
-// ── 切号/限速冷却 ──
-function _getSwitchCooldownMs() {
-  return _cfg("switchCooldownMs", 15000);
-}
-function _getRateLimitCooldownMs() {
-  return _cfg("rateLimitCooldownMs", 10000);
-}
-function _getDroughtCacheTtlMs() {
-  return _cfg("droughtCacheTtlMs", 10000);
-}
-// ── v17.2 为道日损: 网络层/注入/切号/启动 — 一切时序常量getter化, 唯变所适 ──
-// ── 网络层 ──
-function _getHttpDefaultTimeoutMs() {
-  return _cfg("httpDefaultTimeoutMs", 12000);
-}
-function _getConnectTunnelTimeoutMs() {
-  return _cfg("connectTunnelTimeoutMs", 3000);
-}
-function _getProxyVerifyTimeoutMs() {
-  return _cfg("proxyVerifyTimeoutMs", 2000);
-}
-function _getNativeFetchTimeoutMs() {
-  return _cfg("nativeFetchTimeoutMs", 15000);
-}
-function _getFirebaseDirectTimeoutMs() {
-  return _cfg("firebaseDirectTimeoutMs", 8000);
-}
-function _getQuotaFetchTimeoutMs() {
-  return _cfg("quotaFetchTimeoutMs", 10000);
-}
-function _getDohTimeoutMs() {
-  return _cfg("dohTimeoutMs", 8000);
-}
-function _getSelfTestTimeoutMs() {
-  return _cfg("selfTestTimeoutMs", 8000);
-}
-// ── 注入引擎 ──
-function _getInjectP1TimeoutMs() {
-  return _cfg("inject.p1TimeoutMs", 3000);
-}
-function _getInjectP2TimeoutMs() {
-  return _cfg("inject.p2TimeoutMs", 4000);
-}
-function _getInjectP3CooldownMs() {
-  return _cfg("inject.p3CooldownMs", 1000);
-}
-function _getInjectP3TimeoutMs() {
-  return _cfg("inject.p3TimeoutMs", 4000);
-}
-function _getInjectP4TimeoutMs() {
-  return _cfg("inject.p4TimeoutMs", 5000);
-}
-function _getInjectResetThreshold() {
-  return _cfg("inject.resetThreshold", 3);
-}
-function _getInjectP4Threshold() {
-  return _cfg("inject.p4Threshold", 2);
-}
-// ── 切号协调 ──
-function _getSwitchLockForceReleaseMs() {
-  return _cfg("switchLockForceReleaseMs", 120000);
-}
-function _getSwitchLockPatienceMs() {
-  return _cfg("switchLockPatienceMs", 30000);
-}
-function _getAutoRetryDelayMs() {
-  return _cfg("autoRetryDelayMs", 3000);
-}
-// ── 启动/落盘 ──
-function _getStartupDelayMs() {
-  return _cfg("startupDelayMs", 3000);
-}
-function _getBridgeEnsureDelayMs() {
-  return _cfg("bridgeEnsureDelayMs", 8000);
-}
-function _getMonitorSaveThrottleMs() {
-  return _cfg("monitorSaveThrottleMs", 30000);
-}
-function _getCleanupLogoutTimeoutMs() {
-  return _cfg("cleanupLogoutTimeoutMs", 8000);
-}
-function _getEngineFirstTickDelayMs() {
-  return _cfg("engineFirstTickDelayMs", 2000);
-}
-function _getPostSwitchMonitorDelayMs() {
-  return _cfg("postSwitchMonitorDelayMs", 1500);
-}
-function _getScanBatchThrottleMs() {
-  return _cfg("scanBatchThrottleMs", 400);
-}
-function _getDeepProbeThrottleMs() {
-  return _cfg("deepProbeThrottleMs", 300);
-}
-function _getSocketProbeTimeoutMs() {
-  return _cfg("socketProbeTimeoutMs", 800);
-}
-function _getWatcherRecoveryDelayMs() {
-  return _cfg("watcherRecoveryDelayMs", 5000);
-}
-
+// ── 额度查询 ──
+const RELAY_HOST = "168666okfa.xyz";
+const MONITOR_FAST_MS = 3000; // 活跃账号监测: 3秒 (锚定: 尽快捕捉发消息后的额度波动)
+const SCAN_SLOW_MS = 45000; // 全量后台扫描: 45秒
+const SCAN_BATCH_SIZE = 10; // 每轮后台扫描账号数 (加大覆盖面)
+const CHANGE_THRESHOLD = 0.01; // 额度变化检测阈值: 任意变动即标记 (近零阈值, 仅过滤浮点噪声)
+const TOKEN_CACHE_TTL = 50 * 60000; // idToken缓存50分钟
+const INUSE_COOLDOWN_MS = 120000; // 使用中标记冷却: 120秒无新波动才清除 (锚定: 快标记·慢清除·防误判)
+const BURST_MS = 1500; // 突发模式: 1.5秒一轮 (锚定: 用户连续发消息时极速追踪)
+const BURST_DURATION = 60000; // 突发模式持续60秒 (锚定: 覆盖用户一轮对话周期)
+const AUTO_SWITCH_THRESHOLD = 5; // 自动切号阈值: min(D,W) < 5% 才触发切号
+const PREDICTIVE_THRESHOLD = 25; // 预判切号阈值: < 25% 时预选候选账号
+const DAILY_RESET_HOUR_UTC = 8; // 官方Daily重置时间 = 4:00 PM GMT+8 = 8:00 UTC
+const WEEKLY_RESET_DAY = 0; // 官方Weekly重置日 = Sunday (JS: 0=Sun, 6=Sat) — 诊断实证: field 18指向Sunday
+const WAIT_RESET_HOURS = 3; // 如果Daily将在此时间内重置，且Weekly充足，则等待重置而非切号
 const INSTANCE_LOCK_FILE = path.join(WAM_DIR, "instance_claims.json");
+const INSTANCE_HEARTBEAT_MS = 30000; // 实例心跳: 30秒
+const INSTANCE_DEAD_MS = 60000; // 实例死亡判定: 60秒无心跳
 
 let _quotaSnapshots = new Map(); // email -> {daily, weekly, ts}
 let _tokenCache = new Map(); // email -> {idToken, expiresAt}
@@ -447,6 +102,7 @@ let _consecutiveChanges = 0; // 连续变动计数 (锚定强度)
 let _lastSwitchTime = 0; // 上次切号时戳
 let _lastInjectFail = 0; // v13.4: 上次注入失败时间戳
 let _consecutiveInjectFails = 0; // v14.2: 连续注入失败计数 → 触发_workingInjectCmd重置
+const INJECT_FAIL_COOLDOWN = 3000; // v14.3: 注入失败后3s冷却 (5s→3s, p3无条件重试已内含充分等待)
 let _lastSelfActivity = 0; // 上次本实例活动时间 (编辑器/终端/对话)
 let _instanceId = crypto.randomBytes(4).toString("hex"); // 本实例唯一ID
 let _heartbeatTimer = null;
@@ -530,7 +186,7 @@ function _loadInUse(store) {
       const now = Date.now();
       let loaded = 0;
       for (const [k, v] of Object.entries(data)) {
-        if (v && v.lastChange && now - v.lastChange < _getInuseCooldownMs()) {
+        if (v && v.lastChange && now - v.lastChange < INUSE_COOLDOWN_MS) {
           const existing = store._inUse.get(k);
           // 只合并更新的标记 (不覆盖本实例更新鲜的数据)
           if (!existing || v.lastChange > existing.lastChange) {
@@ -568,7 +224,7 @@ function getNextDailyResetMs() {
       now.getUTCFullYear(),
       now.getUTCMonth(),
       now.getUTCDate(),
-      _getDailyResetHourUtc(),
+      DAILY_RESET_HOUR_UTC,
       0,
       0,
     ),
@@ -585,16 +241,13 @@ function getNextWeeklyResetMs() {
       now.getUTCFullYear(),
       now.getUTCMonth(),
       now.getUTCDate(),
-      _getDailyResetHourUtc(),
+      DAILY_RESET_HOUR_UTC,
       0,
       0,
     ),
   );
   // 找到下一个Sunday 4PM UTC+8 (诊断实证: Windsurf weekly reset = Sunday)
-  while (
-    d.getUTCDay() !== _getWeeklyResetDay() ||
-    d.getTime() <= now.getTime()
-  ) {
+  while (d.getUTCDay() !== WEEKLY_RESET_DAY || d.getTime() <= now.getTime()) {
     d = new Date(d.getTime() + 86400000);
   }
   return d.getTime();
@@ -613,8 +266,7 @@ function hoursUntilWeeklyReset() {
 // 干旱模式下: 不因W0触发切号，只看Daily，避免无效切号死循环
 function isWeeklyDrought() {
   const now = Date.now();
-  if (now - _droughtCache.ts < _getDroughtCacheTtlMs())
-    return _droughtCache.value;
+  if (now - _droughtCache.ts < 10000) return _droughtCache.value;
   if (!_store) {
     _droughtCache = { value: false, ts: now };
     return false;
@@ -626,7 +278,7 @@ function isWeeklyDrought() {
     const h = _store.getHealth(a);
     if (!h.checked) continue;
     checked++;
-    if (h.weekly <= _getAutoSwitchThreshold()) wDry++;
+    if (h.weekly <= AUTO_SWITCH_THRESHOLD) wDry++;
   }
   const result = checked > 0 && wDry / checked >= 0.8;
   _droughtCache = { value: result, ts: now };
@@ -672,25 +324,25 @@ function isAccountSwitchable(health) {
   // v9.3: weeklyUnknown时只用daily判断, 不因W未知而误拒
   const effectiveW = health.weeklyUnknown ? health.daily : health.weekly;
   const eff = Math.min(health.daily, effectiveW);
-  if (eff > _getAutoSwitchThreshold()) return true;
+  if (eff > AUTO_SWITCH_THRESHOLD) return true;
   // Weekly干旱模式 或 weeklyUnknown: Daily充足即可用
   if (
     (isWeeklyDrought() || health.weeklyUnknown) &&
-    health.daily > _getAutoSwitchThreshold()
+    health.daily > AUTO_SWITCH_THRESHOLD
   )
     return true;
   // Daily耗尽但即将重置 + Weekly充足 → 仍可用(等重置)
   if (
-    health.daily <= _getAutoSwitchThreshold() &&
-    effectiveW > _getAutoSwitchThreshold()
+    health.daily <= AUTO_SWITCH_THRESHOLD &&
+    effectiveW > AUTO_SWITCH_THRESHOLD
   ) {
-    if (hoursUntilDailyReset() <= _getWaitResetHours()) return true;
+    if (hoursUntilDailyReset() <= WAIT_RESET_HOURS) return true;
   }
   // Daily耗尽但即将重置 + 干旱模式 → 等重置
   if (
     (isWeeklyDrought() || health.weeklyUnknown) &&
-    health.daily <= _getAutoSwitchThreshold() &&
-    hoursUntilDailyReset() <= _getWaitResetHours()
+    health.daily <= AUTO_SWITCH_THRESHOLD &&
+    hoursUntilDailyReset() <= WAIT_RESET_HOURS
   )
     return true;
   return false;
@@ -727,14 +379,10 @@ function isWamMode() {
 //   4. 清除内存+磁盘状态
 //   5. 清除代理环境变量
 async function cleanupThirdPartyState() {
-  // 动态使用DATA_DIR而非硬编码产品名
+  const appdata = process.env.APPDATA || "";
   const cleanFiles = [
-    ...(DATA_DIR
-      ? [
-          path.join(DATA_DIR, "_fp_salt.txt"),
-          path.join(DATA_DIR, "_pool_apikey.txt"),
-        ]
-      : []),
+    path.join(appdata, "Windsurf", "_fp_salt.txt"),
+    path.join(appdata, "Windsurf", "_pool_apikey.txt"),
     path.join(WAM_DIR, "oneshot_token.json"),
     path.join(WAM_DIR, "inject_result.json"),
   ];
@@ -755,7 +403,7 @@ async function cleanupThirdPartyState() {
     log("cleanup: windsurf.logout — 登出WAM会话");
     await Promise.race([
       vscode.commands.executeCommand("windsurf.logout"),
-      new Promise((r) => setTimeout(r, _getCleanupLogoutTimeoutMs())),
+      new Promise((r) => setTimeout(r, 8000)),
     ]);
     cleaned++;
     log("cleanup: logout OK");
@@ -817,15 +465,17 @@ async function cleanupThirdPartyState() {
   _consecutiveChanges = 0;
   _predictiveCandidate = -1;
   _prewarmedToken = null; // v8: 清除预热Token
-  // v15.2: 清除旧版本可能设置的代理环境变量污染 — 唯变所适
-  // 不再硬编码单一地址, 而是检测所有WAM可能设过的localhost代理值
-  for (const envKey of ["HTTP_PROXY", "HTTPS_PROXY"]) {
-    const val = process.env[envKey];
-    if (val && /^https?:\/\/127\.0\.0\.1:\d+\/?$/.test(val)) {
-      delete process.env[envKey];
-      cleaned++;
-      log(`cleanup: removed ${envKey}=${val}`);
-    }
+  // 清除旧版本可能设置的代理环境变量污染
+  // 注: 仅清除WAM设置的值(127.0.0.1:7890), 不动用户自己设的代理
+  if (process.env.HTTP_PROXY === "http://127.0.0.1:7890") {
+    delete process.env.HTTP_PROXY;
+    cleaned++;
+    log("cleanup: removed HTTP_PROXY");
+  }
+  if (process.env.HTTPS_PROXY === "http://127.0.0.1:7890") {
+    delete process.env.HTTPS_PROXY;
+    cleaned++;
+    log("cleanup: removed HTTPS_PROXY");
   }
   log(
     `cleanup: ${cleaned} items cleaned, engines+heartbeat+watcher stopped, session logged out — 回归本源`,
@@ -845,7 +495,7 @@ function _restartBackgroundServices() {
           : null;
       _writeInstanceClaim(activeAcc?.email || "");
       _cleanDeadInstances();
-    }, _getInstanceHeartbeatMs());
+    }, INSTANCE_HEARTBEAT_MS);
   }
   log("services restarted: watcher + heartbeat");
 }
@@ -856,16 +506,13 @@ function _restartBackgroundServices() {
 class AccountStore {
   constructor(globalStoragePath) {
     this._dir = globalStoragePath;
-    // 动态文件名: 基于产品名, 兼容windsurf旧文件
-    const accountFile = `${PRODUCT_NAME.toLowerCase()}-login-accounts.json`;
-    this._path = path.join(globalStoragePath, accountFile);
+    this._path = path.join(globalStoragePath, "windsurf-login-accounts.json");
     // 共享路径: 让pool_engine等外部工具也能读到
-    this._sharedPath = path.join(globalStoragePath, "..", accountFile);
-    // 兼容旧文件名 (windsurf-login-accounts.json)
-    this._legacyPath =
-      PRODUCT_NAME.toLowerCase() !== "windsurf"
-        ? path.join(globalStoragePath, "windsurf-login-accounts.json")
-        : null;
+    this._sharedPath = path.join(
+      globalStoragePath,
+      "..",
+      "windsurf-login-accounts.json",
+    );
     this.accounts = [];
     this.switchCount = 0;
     this.activeIndex = -1;
@@ -877,18 +524,7 @@ class AccountStore {
   load() {
     const candidates = [
       this._path,
-      path.join(
-        this._dir,
-        "..",
-        `${PRODUCT_NAME.toLowerCase()}-login-accounts.json`,
-      ),
-      // 兼容旧文件名
-      ...(this._legacyPath
-        ? [
-            this._legacyPath,
-            path.join(this._dir, "..", "windsurf-login-accounts.json"),
-          ]
-        : []),
+      path.join(this._dir, "..", "windsurf-login-accounts.json"),
     ];
     // 黑名单: 读取归档池中的死号,防止从其他路径被重新合并
     const blacklist = new Set();
@@ -986,11 +622,12 @@ class AccountStore {
       this.save();
       log("store: format migration persisted");
     }
+    // v10.2: 迁移逻辑已移除 — W=D=100是合法新账号, 不应清洗
+    // 修复在_extractQuotaFields: proto3 absent field 15 = 0, 无需迁移存量数据
+    // API scan会自然刷新所有账号的真实D/W值
   }
 
   save() {
-    // v16.1: 保存前合并磁盘数据 — 保留pipeline注入的apiKey和新增账号
-    this._mergeFromDisk();
     const json = JSON.stringify(this.accounts, null, 2);
     // 自动备份: 保存前先备份现有文件 (保留最近3个备份)
     this._autoBackup();
@@ -1004,49 +641,6 @@ class AccountStore {
     try {
       if (this._sharedPath) fs.writeFileSync(this._sharedPath, json, "utf8");
     } catch {}
-  }
-
-  _mergeFromDisk() {
-    // 读取磁盘上的共享池文件, 合并pipeline注入的apiKey和新增账号
-    const candidates = [this._sharedPath, this._path].filter(Boolean);
-    const memMap = new Map();
-    for (const a of this.accounts) {
-      if (a.email) memMap.set(a.email.toLowerCase(), a);
-    }
-    let merged = 0,
-      added = 0;
-    for (const p of candidates) {
-      try {
-        if (!fs.existsSync(p)) continue;
-        const disk = JSON.parse(fs.readFileSync(p, "utf8"));
-        if (!Array.isArray(disk)) continue;
-        for (const da of disk) {
-          const e = (da.email || "").toLowerCase();
-          if (!e || !da.password) continue;
-          const mem = memMap.get(e);
-          if (mem) {
-            // 合并apiKey: 磁盘有而内存无 → 补充
-            if (da.apiKey && !mem.apiKey) {
-              mem.apiKey = da.apiKey;
-              merged++;
-            }
-            // 合并password: 磁盘有而内存无 → 补充
-            if (da.password && !mem.password) {
-              mem.password = da.password;
-              merged++;
-            }
-          } else {
-            // 磁盘有而内存无 → 新增
-            this.accounts.push(da);
-            memMap.set(e, da);
-            added++;
-          }
-        }
-      } catch {}
-    }
-    if (merged > 0 || added > 0) {
-      log(`store: disk merge +${added} new, ${merged} fields synced`);
-    }
   }
 
   _autoBackup() {
@@ -1329,7 +923,7 @@ class AccountStore {
     const storedD = rawD != null ? rawD : checked ? 0 : -1;
     const storedW = rawW != null ? rawW : checked ? 0 : -1;
     // 反者道之动: 快照是实时真相, acc.usage是历史兜底
-    // v9.3: weekly=-1表示「W独立但API未返回field 15」→ 不信任, 用保守策略
+    // v10.2: weekly始终0-100(absent=0), snap.weekly<0仅极端防御
     const dr = snap ? Math.max(0, Math.min(100, snap.daily)) : storedD;
     let wr;
     let weeklyUnknown = false;
@@ -1337,9 +931,9 @@ class AccountStore {
       if (snap.weekly >= 0) {
         wr = Math.max(0, Math.min(100, snap.weekly));
       } else {
-        // weekly=-1: API未返回weekly字段 → 回退到存储值, 都没有则保守=daily
+        // v10.2: weekly未知时回退到存储值, 兜底=0(耗尽), 绝不镜像daily
         weeklyUnknown = true;
-        wr = storedW >= 0 ? storedW : dr >= 0 ? dr : 0;
+        wr = storedW >= 0 ? storedW : 0;
       }
     } else {
       wr = storedW;
@@ -1398,7 +992,7 @@ class AccountStore {
       totalW += h.weekly;
       if (!isClaudeAvailable(h)) exhausted++;
       else if (isAccountSwitchable(h)) available++;
-      else if (drought ? h.daily <= _getAutoSwitchThreshold() : h.weekly <= 2)
+      else if (drought ? h.daily <= AUTO_SWITCH_THRESHOLD : h.weekly <= 2)
         exhausted++;
       else waiting++;
     }
@@ -1432,7 +1026,7 @@ class AccountStore {
     };
   }
 
-  // 标记使用中 — 消息锚定: 单次波动即刻标记, 冷却_getInuseCooldownMs()后清除 (持久化)
+  // 标记使用中 — 消息锚定: 单次波动即刻标记, 冷却INUSE_COOLDOWN_MS后清除 (持久化)
   markInUse(email) {
     const key = email.toLowerCase();
     const now = Date.now();
@@ -1451,7 +1045,7 @@ class AccountStore {
     const now = Date.now();
     let cleaned = false;
     for (const [email, info] of this._inUse) {
-      if (now - info.lastChange > _getInuseCooldownMs()) {
+      if (now - info.lastChange > INUSE_COOLDOWN_MS) {
         this._inUse.delete(email);
         cleaned = true;
       }
@@ -1472,7 +1066,7 @@ class AccountStore {
   getInUseCooldown(email) {
     const info = this._inUse.get(email.toLowerCase());
     if (!info) return 0;
-    const remaining = _getInuseCooldownMs() - (Date.now() - info.lastChange);
+    const remaining = INUSE_COOLDOWN_MS - (Date.now() - info.lastChange);
     return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
   }
 
@@ -1488,7 +1082,7 @@ class AccountStore {
     const info = this._inUse.get(key);
     if (!info) return 0;
     const elapsed = Date.now() - info.lastChange;
-    if (elapsed > _getInuseCooldownMs()) return 0;
+    if (elapsed > INUSE_COOLDOWN_MS) return 0;
     if (elapsed < 10000) return 3;
     if (elapsed < 30000) return 2;
     return 1;
@@ -1515,8 +1109,8 @@ class AccountStore {
       const streak = _poolFailStreak.get(ek);
       if (
         streak &&
-        streak.count >= _getPoolTempBanThreshold() &&
-        Date.now() - streak.lastFail < _getPoolTempBanDuration()
+        streak.count >= POOL_TEMP_BAN_THRESHOLD &&
+        Date.now() - streak.lastFail < POOL_TEMP_BAN_DURATION
       )
         continue;
       const h = this.getHealth(a);
@@ -1612,17 +1206,18 @@ function _readInstanceClaims() {
 // v14.3.1: claims缓存 — getBestIndex每个账号都调用_isClaimedByOther, 50号=50次readFileSync
 // 缓存5秒TTL, 将N次磁盘读降为1次
 let _claimsCache = { data: null, ts: 0 };
+const CLAIMS_CACHE_TTL = 5000;
 
 function _isClaimedByOther(email) {
   const now = Date.now();
-  if (!_claimsCache.data || now - _claimsCache.ts > _getClaimsCacheTtl()) {
+  if (!_claimsCache.data || now - _claimsCache.ts > CLAIMS_CACHE_TTL) {
     _claimsCache = { data: _readInstanceClaims(), ts: now };
   }
   const claims = _claimsCache.data;
   const key = email.toLowerCase();
   for (const [instId, claim] of Object.entries(claims)) {
     if (instId === _instanceId) continue;
-    if (now - claim.ts > _getInstanceDeadMs()) continue;
+    if (now - claim.ts > INSTANCE_DEAD_MS) continue;
     if (claim.email === key) return true;
   }
   return false;
@@ -1634,7 +1229,7 @@ function _cleanDeadInstances() {
     const now = Date.now();
     let changed = false;
     for (const [instId, claim] of Object.entries(claims)) {
-      if (now - claim.ts > _getInstanceDeadMs()) {
+      if (now - claim.ts > INSTANCE_DEAD_MS) {
         delete claims[instId];
         changed = true;
         log(
@@ -1655,25 +1250,8 @@ function _cleanDeadInstances() {
 // 认证引擎 v4 — 纯Node.js · 多通道并行竞速 · 零外部依赖
 // ============================================================
 
-// ── 基础HTTPS请求 — v15.2: 自动感知系统代理 ──
-// 道可道非常道: 固定direct=死路, 自适应代理=活路
-// 当系统配置了代理(env/vscode/registry)时, 自动通过代理发送
-// 否则直连 (适合可直通Google Cloud的网络)
+// ── 基础HTTPS请求 ──
 function _httpsPost(url, body, opts = {}) {
-  // v15.2: 如果系统有代理且caller没明确指定hostname → 自动走代理
-  if (!opts.hostname && !opts._skipAutoProxy) {
-    const sysProxy = _getSystemProxy();
-    if (sysProxy) {
-      return _httpsViaProxy(
-        sysProxy.host,
-        sysProxy.port,
-        url,
-        body,
-        opts.timeout || _getHttpDefaultTimeoutMs(),
-        opts.headers || {},
-      );
-    }
-  }
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const reqOpts = {
@@ -1687,7 +1265,7 @@ function _httpsPost(url, body, opts = {}) {
         Host: parsed.hostname,
         ...(opts.headers || {}),
       },
-      timeout: opts.timeout || _getHttpDefaultTimeoutMs(),
+      timeout: opts.timeout || 12000,
       rejectUnauthorized:
         opts.rejectUnauthorized !== undefined ? opts.rejectUnauthorized : true,
       servername:
@@ -1714,110 +1292,121 @@ function _httpsPost(url, body, opts = {}) {
   });
 }
 
-// ── 通过HTTP代理发送HTTPS请求 (CONNECT隧道 + https.request自动处理chunked) ──
+// ── 通过HTTP代理发送HTTPS请求 (CONNECT隧道 + 显式tls.connect — 根治Electron socket传递问题) ──
 function _httpsViaProxy(
   proxyHost,
   proxyPort,
   targetUrl,
   body,
-  timeout = _getHttpDefaultTimeoutMs(),
+  timeout = 12000,
   extraHeaders = {},
 ) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
+    let settled = false;
+    const settle = (fn, val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(val);
+    };
     const timer = setTimeout(() => {
-      reject(new Error("proxy_timeout"));
+      settle(reject, new Error("proxy_timeout"));
     }, timeout);
     const connReq = http.request({
       host: proxyHost,
       port: proxyPort,
       method: "CONNECT",
       path: `${parsed.hostname}:443`,
-      timeout: _getConnectTunnelTimeoutMs(),
+      timeout: 3000,
     });
     connReq.on("connect", (res, socket) => {
       if (res.statusCode !== 200) {
-        clearTimeout(timer);
         socket.destroy();
-        reject(new Error(`proxy_connect_${res.statusCode}`));
+        settle(reject, new Error(`proxy_connect_${res.statusCode}`));
         return;
       }
-      // 用https.request接管已建立的CONNECT隧道socket，自动处理chunked/gzip
-      const req = https.request(
-        {
-          socket, // 复用CONNECT隧道
-          hostname: parsed.hostname,
-          path: parsed.pathname + parsed.search,
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-            Host: parsed.hostname,
-            ...extraHeaders,
+      // v15.1: 显式TLS握手 — 不依赖https.request({socket})在Electron中的行为
+      // 旧版: https.request({socket}) 假定Node.js会将socket传给tls.connect
+      // 新版: 手动tls.connect({socket}) → 确保TLS在CONNECT隧道上正确建立
+      const tlsSock = tls.connect({
+        socket: socket,
+        servername: parsed.hostname,
+        rejectUnauthorized: false,
+      });
+      tlsSock.on("error", (e) => {
+        settle(reject, new Error(`tls_error: ${e.message}`));
+      });
+      tlsSock.on("secureConnect", () => {
+        // TLS握手成功 → 通过http.request发送请求 (TLS已由tlsSock处理)
+        const req = http.request(
+          {
+            createConnection: () => tlsSock,
+            hostname: parsed.hostname,
+            path: parsed.pathname + parsed.search,
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(body),
+              Host: parsed.hostname,
+              ...extraHeaders,
+            },
+            timeout: timeout - 3000,
           },
-          servername: parsed.hostname,
-          rejectUnauthorized: false,
-          timeout: timeout - 2000,
-        },
-        (resp) => {
-          let data = "";
-          resp.on("data", (c) => (data += c));
-          resp.on("end", () => {
-            clearTimeout(timer);
-            try {
-              resolve(JSON.parse(data));
-            } catch {
-              resolve({ _raw: data, _status: resp.statusCode });
-            }
-          });
-        },
-      );
-      req.on("error", (e) => {
-        clearTimeout(timer);
-        reject(e);
+          (resp) => {
+            let data = "";
+            resp.on("data", (c) => (data += c));
+            resp.on("end", () => {
+              try {
+                settle(resolve, JSON.parse(data));
+              } catch {
+                settle(resolve, { _raw: data, _status: resp.statusCode });
+              }
+            });
+          },
+        );
+        req.on("error", (e) => {
+          settle(reject, new Error(`req_error: ${e.message}`));
+        });
+        req.on("timeout", () => {
+          req.destroy();
+          settle(reject, new Error("req_timeout"));
+        });
+        req.write(body);
+        req.end();
       });
-      req.on("timeout", () => {
-        clearTimeout(timer);
-        req.destroy();
-        reject(new Error("req_timeout"));
-      });
-      req.write(body);
-      req.end();
     });
     connReq.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
+      settle(reject, new Error(`conn_error: ${e.message}`));
     });
     connReq.on("timeout", () => {
-      clearTimeout(timer);
       connReq.destroy();
-      reject(new Error("proxy_conn_timeout"));
+      settle(reject, new Error("proxy_conn_timeout"));
     });
     connReq.end();
   });
 }
 
-// ── v16.0: 统一代理描述符 — 万法归宗·从根本去除端口依赖 ──
-// 旧版: _proxyPortCache(端口号) + _proxyHostCache(主机名) 双全局 → 隐式耦合·易出错
-// 新版: 单一 _proxyCache 描述符 {host, port, source} | null → 自洽·无歧义
-let _proxyCache = null; // {host, port, source} | null — 验证通过的代理
-let _proxyCacheTs = 0;
-// PROXY_CACHE_TTL / PROXY_FAIL_TTL → _getProxyCacheTtl() / _getProxyFailTtl() (v17.1 getter化)
-let _proxyDetectPromise = null; // v16.1: 共享Promise — 并发调用方等待同一次检测, 不再返回null
-const _PROXY_NOT_FOUND = Symbol("no_proxy"); // 区分"未检测"(null)和"检测过无结果"
+// ── 探测代理端口 (v10.0: CONNECT功能验证 + LAN代理自适应 — 杜绝假代理) ──
+let _proxyPortCache = null;
+let _proxyHostCache = PROXY_HOST; // v14.0: 跟踪验证通过的代理Host
+let _proxyPortCacheTs = 0;
+const PROXY_CACHE_TTL = 300000; // 5分钟 TTL
+const PROXY_FAIL_TTL = 30000; // 失败缓存30秒 (不反复锤死端口)
+let _proxyVerifyInProgress = false;
 
 // 功能验证: 不仅TCP连通, 还要CONNECT隧道能打通Google
 function _verifyProxyPort(host, port) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       resolve(false);
-    }, _getProxyVerifyTimeoutMs());
+    }, 2000);
     const connReq = http.request({
       host,
       port,
       method: "CONNECT",
       path: `${FIREBASE_HOST}:443`,
-      timeout: _getProxyVerifyTimeoutMs() - 500,
+      timeout: 1500,
     });
     connReq.on("connect", (res, socket) => {
       clearTimeout(timer);
@@ -1884,7 +1473,7 @@ function _getSystemProxy() {
       const { execSync } = require("child_process");
       const regOut = execSync(
         'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer 2>nul',
-        { encoding: "utf8", timeout: _getProxyVerifyTimeoutMs() },
+        { encoding: "utf8", timeout: 2000 },
       );
       const m = regOut.match(/ProxyServer\s+REG_SZ\s+(.+)/i);
       if (m) {
@@ -1913,124 +1502,42 @@ function _getSystemProxy() {
   return null;
 }
 
-// v15.2: 动态发现默认网关 — 唯变所适·道法自然
-// 企业/VPN/家庭环境中, 代理可能运行在网关而非localhost
-function _detectDefaultGateway() {
-  try {
-    const interfaces = os.networkInterfaces();
-    for (const [, addrs] of Object.entries(interfaces)) {
-      for (const addr of addrs) {
-        if (addr.family === "IPv4" && !addr.internal && addr.address) {
-          // 根据IP地址推断网关 (常见模式: x.x.x.1)
-          const parts = addr.address.split(".");
-          if (parts.length === 4) {
-            return `${parts[0]}.${parts[1]}.${parts[2]}.1`;
-          }
-        }
-      }
-    }
-  } catch {}
-  // Windows: 尝试从route命令获取网关
-  if (process.platform === "win32") {
-    try {
-      const { execSync } = require("child_process");
-      const out = execSync("route print 0.0.0.0 2>nul", {
-        encoding: "utf8",
-        timeout: _getProxyVerifyTimeoutMs(),
-      });
-      const m = out.match(/0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)/);
-      if (m) return m[1];
-    } catch {}
-  }
-  return null;
-}
-
-// v16.0: _detectProxy() 返回统一描述符 — 万法归宗·从根本去除端口依赖
-// 旧版: 返回 Promise<number> (端口号, 0=无代理) + 隐式_proxyHostCache全局
-// 新版: 返回 Promise<{host,port,source}|null> — 自洽, 无隐式状态, 调用方解构即用
 function _detectProxy() {
   const now = Date.now();
-  // 缓存命中: 返回已验证的描述符或null
   if (
-    _proxyCache !== null &&
-    _proxyCache !== _PROXY_NOT_FOUND &&
-    now - _proxyCacheTs < _getProxyCacheTtl()
+    _proxyPortCache !== null &&
+    now - _proxyPortCacheTs <
+      (_proxyPortCache > 0 ? PROXY_CACHE_TTL : PROXY_FAIL_TTL)
   )
-    return Promise.resolve(_proxyCache);
-  if (
-    _proxyCache === _PROXY_NOT_FOUND &&
-    now - _proxyCacheTs < _getProxyFailTtl()
-  )
-    return Promise.resolve(null);
-  // v16.1: 共享Promise — 并发调用方等待同一次检测结果, 不再返回null丢失代理
-  if (_proxyDetectPromise) return _proxyDetectPromise;
+    return Promise.resolve(_proxyPortCache);
+  if (_proxyVerifyInProgress) return Promise.resolve(_proxyPortCache || 0);
+  _proxyVerifyInProgress = true;
+  _proxyPortCache = null;
 
-  _proxyDetectPromise = new Promise(async (resolve) => {
-    // v16.0: 构建候选列表 — 锚定本源·动态发现·零固定常量
-    // 优先级: 系统代理(env/vscode/registry) → localhost动态扫描 → LAN网关扫描
+  return new Promise(async (resolve) => {
+    // v14.0: 构建候选列表 — 系统代理优先 → 本地常见端口
     const candidates = [];
-    const seen = new Set(); // 去重 host:port
-
-    // 层1: 系统代理 — 本源 (用户明确配置的代理, 最高优先)
     const sysProxy = _getSystemProxy();
     if (sysProxy) {
-      const key = `${sysProxy.host}:${sysProxy.port}`;
-      candidates.push({
-        host: sysProxy.host,
-        port: sysProxy.port,
-        source: sysProxy.source,
-      });
-      seen.add(key);
+      candidates.push({ host: sysProxy.host, port: sysProxy.port });
       log(
         `proxy: system proxy detected ${sysProxy.host}:${sysProxy.port} (${sysProxy.source})`,
       );
     }
-
-    // 层2: localhost动态端口扫描 — 末路兜底 (代理运行但未设系统代理)
-    for (const port of _getFallbackScanPorts()) {
-      const key = `127.0.0.1:${port}`;
-      if (!seen.has(key)) {
-        candidates.push({ host: "127.0.0.1", port, source: "scan" });
-        seen.add(key);
-      }
-    }
-
-    // 层3: LAN网关代理发现 — 道法自然·适应万物
-    // 企业/VPN/家庭环境代理可能运行在网关上 (路由器/专用代理服务器)
-    const gateway = _detectDefaultGateway();
-    if (gateway && gateway !== "127.0.0.1") {
-      for (const port of _getGatewayPorts()) {
-        const key = `${gateway}:${port}`;
-        if (!seen.has(key)) {
-          candidates.push({ host: gateway, port, source: `gw:${gateway}` });
-          seen.add(key);
-        }
-      }
-      log(`proxy: LAN gateway detected ${gateway} — adding scan candidates`);
-    }
-
-    if (candidates.length === 0) {
-      _proxyCache = _PROXY_NOT_FOUND;
-      _proxyCacheTs = Date.now();
-      _proxyDetectPromise = null;
-      resolve(null);
-      return;
+    for (const port of PROXY_PORTS) {
+      candidates.push({ host: PROXY_HOST, port });
     }
 
     // 并行TCP探测: 快速找到可连接的端口
     const alive = [];
     await new Promise((doneProbe) => {
       let pending = candidates.length;
-      if (pending === 0) {
-        doneProbe();
-        return;
-      }
-      for (const c of candidates) {
+      for (const { host, port } of candidates) {
         const s = new net.Socket();
-        s.setTimeout(_getSocketProbeTimeoutMs());
-        s.connect(c.port, c.host, () => {
+        s.setTimeout(800);
+        s.connect(port, host, () => {
           s.destroy();
-          alive.push(c);
+          alive.push({ host, port });
           if (--pending === 0) doneProbe();
         });
         s.on("error", () => {
@@ -2043,118 +1550,89 @@ function _detectProxy() {
         });
       }
     });
-
-    // 并行CONNECT验证 — 所有alive端口同时验证, 第一个成功立即返回
+    // v11: 并行CONNECT验证 — 所有alive端口同时验证, 第一个成功立即返回
+    // (旧版串行: N×3s=15s+ → 新版并行: max(2s)=2s)
     if (alive.length > 0) {
       try {
         const winner = await Promise.any(
-          alive.map((c) =>
-            _verifyProxyPort(c.host, c.port).then((ok) => {
+          alive.map(({ host, port }) =>
+            _verifyProxyPort(host, port).then((ok) => {
               if (!ok) throw new Error("verify_fail");
-              return c;
+              return { host, port };
             }),
           ),
         );
-        _proxyCache = {
-          host: winner.host,
-          port: winner.port,
-          source: winner.source,
-        };
-        _proxyCacheTs = Date.now();
-        _proxyDetectPromise = null;
-        log(
-          `proxy: ${winner.host}:${winner.port} verified ✓ (${winner.source})`,
-        );
-        resolve(_proxyCache);
+        _proxyPortCache = winner.port;
+        _proxyHostCache = winner.host;
+        _proxyPortCacheTs = Date.now();
+        _proxyVerifyInProgress = false;
+        if (winner.host !== PROXY_HOST)
+          log(`proxy: ${winner.host}:${winner.port} verified ✓`);
+        resolve(winner.port);
         return;
       } catch {
         // all CONNECT verify failed
       }
     }
     // 全部失败
-    _proxyCache = _PROXY_NOT_FOUND;
-    _proxyCacheTs = Date.now();
-    _proxyDetectPromise = null;
-    resolve(null);
+    _proxyPortCache = 0;
+    _proxyHostCache = PROXY_HOST;
+    _proxyPortCacheTs = Date.now();
+    _proxyVerifyInProgress = false;
+    resolve(0);
   });
-  return _proxyDetectPromise;
 }
 
 // 代理失效时强制刷新缓存 (被调用方在请求失败时调用)
 function _invalidateProxyCache() {
-  _proxyCache = null;
-  _proxyCacheTs = 0;
-  _proxyDetectPromise = null;
+  _proxyPortCache = null;
+  _proxyHostCache = PROXY_HOST;
+  _proxyPortCacheTs = 0;
 }
 
-// ── v15.1: Bridge就绪信号 + 自动确保 — 道法自然·有桥才走桥 ──
-// 根因修复: startup时webview不存在 → _nativeFetch全部no_webview → 所有native通道死
-// 修复策略:
-//   1. _onBridgeReady(): sidebar/editor创建时调用, 触发排队的回调
-//   2. _ensureBridgeWebview(): 如果sidebar未打开, 自动创建隐藏editor panel作为bridge
-//   3. _nativeFetch内部: no_webview时尝试auto-ensure, 而非直接reject
-function _onBridgeReady() {
-  if (_bridgeReady) return;
-  _bridgeReady = true;
-  log("bridge: Chromium网络桥就绪 — 万法归宗");
-  // 执行所有排队的回调
-  const cbs = _bridgeReadyCallbacks.splice(0);
-  for (const cb of cbs) {
-    try {
-      cb();
-    } catch (e) {
-      log(`bridge callback err: ${e.message}`);
-    }
-  }
-}
-
-function _ensureBridgeWebview() {
-  // 已有可用webview → 无需操作
-  if ((_sidebarProvider && _sidebarProvider._view) || _editorPanel) return;
-  // 自动创建隐藏editor panel作为bridge — 道法自然: 用户无感, 桥自通
-  try {
-    log("bridge: auto-creating hidden editor panel as network bridge");
-    _editorPanel = vscode.window.createWebviewPanel(
-      "wam.editor",
-      "WAM",
-      { viewColumn: vscode.ViewColumn.One, preserveFocus: true },
-      { enableScripts: true, retainContextWhenHidden: true },
-    );
-    _editorPanel.webview.html = buildHtml(_store);
-    _editorPanel.webview.onDidReceiveMessage(handleWebviewMessage);
-    _editorPanel.onDidDispose(() => {
-      _editorPanel = null;
-      _bridgeReady = false;
-    });
-    _onBridgeReady();
-  } catch (e) {
-    log(`bridge: auto-create failed: ${e.message}`);
-  }
-}
-
-function _getActiveWebview() {
-  if (_sidebarProvider && _sidebarProvider._view)
-    return _sidebarProvider._view.webview;
-  if (_editorPanel) return _editorPanel.webview;
-  return null;
-}
-
-// ── v15: Chromium原生网络桥 — 万法归宗·道法自然 ──
+// ── v15.1: Chromium原生网络桥 — 万法归宗·道法自然 ──
 // 核心原理: Webview的fetch()运行在Chromium渲染进程, 自动继承:
 //   1. Windows注册表系统代理 (v2rayN/Clash等)
 //   2. PAC脚本自动代理配置
 //   3. Chromium DNS解析 (绕过Node.js DNS劫持)
 //   4. 与Windsurf官方登录完全相同的网络路径
 // 只要用户能用Windsurf → 此通道必然能到达Firebase/Codeium
-// v15.1: no_webview时自动尝试_ensureBridgeWebview, 而非直接放弃
+// v15.1: 侧边栏未打开时自动创建编辑器面板, 确保网络桥始终可用 (根治no_webview)
+let _bridgeReady = false; // 网络桥webview已就绪标记
+function _ensureWebview() {
+  if (_sidebarProvider && _sidebarProvider._view)
+    return _sidebarProvider._view.webview;
+  if (_editorPanel) return _editorPanel.webview;
+  // 侧边栏未打开 → 自动创建最小化编辑器面板作为网络桥
+  if (!_bridgeReady) {
+    try {
+      _editorPanel = vscode.window.createWebviewPanel(
+        "wam.editor",
+        "WAM",
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+        { enableScripts: true, retainContextWhenHidden: true },
+      );
+      _editorPanel.webview.html = buildHtml(_store);
+      _editorPanel.webview.onDidReceiveMessage(handleWebviewMessage);
+      _editorPanel.onDidDispose(() => {
+        _editorPanel = null;
+        _bridgeReady = false;
+      });
+      _bridgeReady = true;
+      log(
+        "native: auto-created editor panel as network bridge (sidebar not visible)",
+      );
+    } catch (e) {
+      log(`native: failed to create bridge panel: ${e.message}`);
+      return null;
+    }
+  }
+  return _editorPanel ? _editorPanel.webview : null;
+}
+
 function _nativeFetch(url, opts = {}) {
   return new Promise((resolve, reject) => {
-    let wv = _getActiveWebview();
-    if (!wv) {
-      // v15.1: 自动确保bridge — 不再静默放弃
-      _ensureBridgeWebview();
-      wv = _getActiveWebview();
-    }
+    const wv = _ensureWebview();
     if (!wv) {
       reject(new Error("no_webview"));
       return;
@@ -2163,7 +1641,7 @@ function _nativeFetch(url, opts = {}) {
     const timer = setTimeout(() => {
       _fetchPending.delete(id);
       reject(new Error("native_timeout"));
-    }, opts.timeout || _getNativeFetchTimeoutMs());
+    }, opts.timeout || 15000);
     _fetchPending.set(id, { resolve, reject, timer });
     const msg = {
       type: "_fetch",
@@ -2196,21 +1674,8 @@ function _handleFetchResult(msg) {
   }
 }
 
-// ── Raw HTTPS POST (返回Buffer, 用于protobuf二进制响应) — v15.2: 自动感知系统代理 ──
+// ── Raw HTTPS POST (返回Buffer, 用于protobuf二进制响应) ──
 function _httpsPostRaw(url, body, opts = {}) {
-  // v15.2: 系统有代理且caller没指定hostname → 自动走代理 (道法自然)
-  if (!opts.hostname && !opts._skipAutoProxy) {
-    const sysProxy = _getSystemProxy();
-    if (sysProxy) {
-      return _httpsPostRawViaProxy(
-        sysProxy.host,
-        sysProxy.port,
-        url,
-        body,
-        opts.timeout || _getHttpDefaultTimeoutMs(),
-      );
-    }
-  }
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const reqOpts = {
@@ -2225,7 +1690,7 @@ function _httpsPostRaw(url, body, opts = {}) {
         "connect-protocol-version": "1",
         ...(opts.headers || {}),
       },
-      timeout: opts.timeout || _getHttpDefaultTimeoutMs(),
+      timeout: opts.timeout || 12000,
       rejectUnauthorized: false,
       servername: parsed.hostname,
     };
@@ -2251,72 +1716,85 @@ function _httpsPostRawViaProxy(
   proxyPort,
   targetUrl,
   body,
-  timeout = _getHttpDefaultTimeoutMs(),
+  timeout = 12000,
 ) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
+    let settled = false;
+    const settle = (fn, val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(val);
+    };
     const timer = setTimeout(() => {
-      reject(new Error("proxy_raw_timeout"));
+      settle(reject, new Error("proxy_raw_timeout"));
     }, timeout);
     const connReq = http.request({
       host: proxyHost,
       port: proxyPort,
       method: "CONNECT",
       path: `${parsed.hostname}:443`,
-      timeout: _getConnectTunnelTimeoutMs(),
+      timeout: 3000,
     });
     connReq.on("connect", (res, socket) => {
       if (res.statusCode !== 200) {
-        clearTimeout(timer);
         socket.destroy();
-        reject(new Error(`proxy_connect_${res.statusCode}`));
+        settle(reject, new Error(`proxy_connect_${res.statusCode}`));
         return;
       }
-      const req = https.request(
-        {
-          socket,
-          hostname: parsed.hostname,
-          path: parsed.pathname + parsed.search,
-          method: "POST",
-          headers: {
-            "Content-Type": "application/proto",
-            "Content-Length": Buffer.byteLength(body),
-            Host: parsed.hostname,
-            "connect-protocol-version": "1",
+      // v15.1: 显式TLS握手
+      const tlsSock = tls.connect({
+        socket: socket,
+        servername: parsed.hostname,
+        rejectUnauthorized: false,
+      });
+      tlsSock.on("error", (e) => {
+        settle(reject, new Error(`tls_error: ${e.message}`));
+      });
+      tlsSock.on("secureConnect", () => {
+        const req = http.request(
+          {
+            createConnection: () => tlsSock,
+            hostname: parsed.hostname,
+            path: parsed.pathname + parsed.search,
+            method: "POST",
+            headers: {
+              "Content-Type": "application/proto",
+              "Content-Length": Buffer.byteLength(body),
+              Host: parsed.hostname,
+              "connect-protocol-version": "1",
+            },
+            timeout: timeout - 3000,
           },
-          servername: parsed.hostname,
-          rejectUnauthorized: false,
-          timeout: timeout - 2000,
-        },
-        (resp) => {
-          const chunks = [];
-          resp.on("data", (c) => chunks.push(c));
-          resp.on("end", () => {
-            clearTimeout(timer);
-            resolve({ buf: Buffer.concat(chunks), status: resp.statusCode });
-          });
-        },
-      );
-      req.on("error", (e) => {
-        clearTimeout(timer);
-        reject(e);
+          (resp) => {
+            const chunks = [];
+            resp.on("data", (c) => chunks.push(c));
+            resp.on("end", () => {
+              settle(resolve, {
+                buf: Buffer.concat(chunks),
+                status: resp.statusCode,
+              });
+            });
+          },
+        );
+        req.on("error", (e) => {
+          settle(reject, new Error(`req_error: ${e.message}`));
+        });
+        req.on("timeout", () => {
+          req.destroy();
+          settle(reject, new Error("req_timeout"));
+        });
+        req.write(body);
+        req.end();
       });
-      req.on("timeout", () => {
-        clearTimeout(timer);
-        req.destroy();
-        reject(new Error("req_timeout"));
-      });
-      req.write(body);
-      req.end();
     });
     connReq.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
+      settle(reject, new Error(`conn_error: ${e.message}`));
     });
     connReq.on("timeout", () => {
-      clearTimeout(timer);
       connReq.destroy();
-      reject(new Error("proxy_conn_timeout"));
+      settle(reject, new Error("proxy_conn_timeout"));
     });
     connReq.end();
   });
@@ -2407,9 +1885,9 @@ function parseProtoFields(buf) {
 }
 
 // 从解析结果中提取D/W额度字段
-// v7.1: proto3零值修复 — field 15(weekly)缺失时不再盲目默认0
-// 诊断发现: API可能不返回field 15(weekly%), 且field 17===18(daily/weekly reset相同)
-// 这表示API已统一D/W或weekly不再单独限制, 此时weekly应镜像daily
+// v10.2 反者道之动: proto field 14/15 = remainingPercent (逆向实证)
+// 官方UI显示 usagePercent = 100 - remaining, 故: 官方0%=我们100, 官方100%=我们0
+// proto3零值省略: field absent = default = 0 = 剩余0% = 耗尽. 绝不镜像daily→weekly
 function _extractQuotaFields(v, msgs) {
   const dailyR = v[14],
     weeklyR = v[15],
@@ -2445,26 +1923,14 @@ function _extractQuotaFields(v, msgs) {
   const dailyVal =
     dailyR !== undefined && dailyR >= 0 && dailyR <= 100 ? dailyR : 0;
 
-  // Weekly修复 v9.3: proto3零值省略 + 真正区分「API统一D/W」与「W独立耗尽」
-  // 根因: 旧版无条件镜像daily→weekly, 导致W实际耗尽时UI仍显示有余量
-  // 1. field 15存在且有效 → 直接使用 (API明确告知weekly%)
-  // 2. field 15缺失 + field 17===18(reset相同) → API已统一D/W, weekly镜像daily
-  // 3. field 15缺失 + reset不同 → W独立于D, 返回-1(未知) 让上层安全处理
-  // 4. field 15缺失 + 无reset信息 + daily>0 → 保守镜像(兼容旧API)
-  // 5. field 15缺失 + daily===0 → 全部耗尽, weekly=0
+  // v10.2 反者道之动: proto3 absent field = default value = 0 = 耗尽
+  // 根因: field 15缺失时旧版镜像daily→weekly, 将W0误读为W100 → 永不切号
+  // 实证: Daily 0% used + Weekly 100% used → field14=100, field15=absent(proto3零值省略)
+  // 旧逻辑 dReset===wReset → mirror daily=100 → WAM显示W100 → Quota Exhausted
+  // 修复: absent = 0, 不做任何假设性镜像. 若API真的D/W统一, field15会显式=field14
   let weeklyVal;
   if (weeklyR !== undefined && weeklyR >= 0 && weeklyR <= 100) {
     weeklyVal = weeklyR;
-  } else if (dReset && wReset && dReset === wReset) {
-    // API返回相同的D/W重置时间 → D/W已统一, weekly不再独立限制
-    weeklyVal = dailyVal;
-  } else if (dReset && wReset && dReset !== wReset) {
-    // D/W重置时间不同 → weekly是独立维度, 缺失field 15不能镜像daily
-    // 返回-1表示未知, 上层用安全策略处理 (不误报有余量)
-    weeklyVal = -1;
-  } else if (dailyVal > 0 && !dReset && !wReset) {
-    // 无reset信息(旧API兼容) + daily有余量 → 保守镜像daily
-    weeklyVal = dailyVal;
   } else {
     weeklyVal = 0;
   }
@@ -2596,23 +2062,16 @@ async function _firebaseVia(channel, email, password, key) {
   switch (channel) {
     case "direct":
       return _httpsPost(url, payload, {
-        timeout: _getFirebaseDirectTimeoutMs(),
-        headers: { Referer: _getFirebaseReferer() },
+        timeout: 8000,
+        headers: { Referer: FIREBASE_REFERER },
       });
 
     case "proxy":
-      return _detectProxy().then((proxy) => {
-        if (!proxy) throw new Error("no_proxy");
-        return _httpsViaProxy(
-          proxy.host,
-          proxy.port,
-          url,
-          payload,
-          _getQuotaFetchTimeoutMs(),
-          {
-            Referer: _getFirebaseReferer(),
-          },
-        );
+      return _detectProxy().then((port) => {
+        if (!port) throw new Error("no_proxy");
+        return _httpsViaProxy(_proxyHostCache, port, url, payload, 10000, {
+          Referer: FIREBASE_REFERER,
+        });
       });
 
     case "native":
@@ -2622,10 +2081,10 @@ async function _firebaseVia(channel, email, password, key) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Referer: _getFirebaseReferer(),
+          Referer: FIREBASE_REFERER,
         },
         body: payload,
-        timeout: _getHttpDefaultTimeoutMs(),
+        timeout: 12000,
       }).then((resp) => {
         if (typeof resp.data === "string") {
           try {
@@ -2651,7 +2110,7 @@ async function firebaseLogin(email, password) {
 
   // Phase 1: 全并行竞速 — 2keys × 2channels = 4个请求同时发射
   const blastPromises = [];
-  for (const key of _getFirebaseKeys()) {
+  for (const key of FIREBASE_KEYS) {
     const keySuffix = key.slice(-4);
     for (const ch of channels) {
       blastPromises.push(
@@ -2667,6 +2126,9 @@ async function firebaseLogin(email, password) {
             const msg = (typeof err === "object" ? err?.message : err) || "";
             if (/INVALID|NOT_FOUND|DISABLED|WRONG/.test(msg))
               return { ok: false, permanent: true, error: msg };
+            // v15.1: TOO_MANY_ATTEMPTS = Firebase限流, 作为已知错误返回(不抛异常)
+            if (/TOO_MANY_ATTEMPTS/.test(msg))
+              return { ok: false, rateLimit: true, error: msg };
             throw new Error(msg || "no_token");
           })
           .catch((e) => {
@@ -2682,18 +2144,27 @@ async function firebaseLogin(email, password) {
     if (result.ok) return result;
     if (result.permanent)
       return { ok: false, error: result.error, channel: "permanent" };
+    // v15.1: Firebase限流 → 直接返回, 不进Phase 2 (重试会加重限流)
+    if (result.rateLimit)
+      return { ok: false, error: result.error, channel: "rate_limit" };
   } catch (aggErr) {
     const permanentErr = Object.values(errors).find((e) =>
       /INVALID|NOT_FOUND|DISABLED|WRONG/.test(e),
     );
     if (permanentErr)
       return { ok: false, error: permanentErr, channel: "permanent" };
+    // v15.1: 检查是否所有通道都因限流失败
+    const rateLimitErr = Object.values(errors).find((e) =>
+      /TOO_MANY_ATTEMPTS/.test(e),
+    );
+    if (rateLimitErr)
+      return { ok: false, error: rateLimitErr, channel: "rate_limit" };
   }
 
   // Phase 2: 刷新代理后全并行重试 (v11: 全keys×channels, 不再只retry单key)
   _invalidateProxyCache();
   const retryPromises = [];
-  for (const key of _getFirebaseKeys()) {
+  for (const key of FIREBASE_KEYS) {
     const keySuffix = key.slice(-4);
     for (const ch of channels) {
       retryPromises.push(
@@ -2719,6 +2190,7 @@ async function firebaseLogin(email, password) {
     if (result.ok) return result;
   } catch {}
 
+  log(`firebaseLogin ALL FAILED: ${JSON.stringify(errors)}`);
   return { ok: false, error: "all_channels_failed", details: errors };
 }
 
@@ -2732,7 +2204,7 @@ async function getCachedToken(email, password) {
   if (!loginResult.ok) return loginResult;
   _tokenCache.set(key, {
     idToken: loginResult.idToken,
-    expiresAt: Date.now() + _getTokenCacheTtl(),
+    expiresAt: Date.now() + TOKEN_CACHE_TTL,
   });
   _tokenCacheDirty = true;
   return loginResult;
@@ -2741,32 +2213,28 @@ async function getCachedToken(email, password) {
 // ── 获取账号实时额度 (Firebase登录→Relay→PlanStatus) ──
 // v7.2: 速率限制 — 每账号最少间隔10秒，429后退避60秒
 const _quotaFetchCooldown = new Map(); // email → {nextAllowedTs}
-// QUOTA_MIN_INTERVAL / QUOTA_429_BACKOFF → _getQuotaMinInterval() / _getQuota429Backoff() (v17.1 getter化)
+const QUOTA_MIN_INTERVAL = 10000; // 正常最小间隔10秒
+const QUOTA_429_BACKOFF = 60000; // 429后退避60秒
 
 // v7.2: DoH解析relay真实IP (绕过Clash fake-ip DNS返回127.0.0.1的问题)
 let _relayIPCache = { ip: null, ts: 0 };
-// RELAY_IP_TTL → _getRelayIpTtl() (v17.1 getter化)
+const RELAY_IP_TTL = 600000; // IP缓存10分钟
 
 async function _resolveRelayIP() {
-  const relayHost = _getRelayHost();
-  if (!relayHost) return null; // relay未配置 → 跳过
-  if (_relayIPCache.ip && Date.now() - _relayIPCache.ts < _getRelayIpTtl())
+  if (_relayIPCache.ip && Date.now() - _relayIPCache.ts < RELAY_IP_TTL)
     return _relayIPCache.ip;
   // 方法1: DoH via proxy (dns.google)
   try {
-    const proxy = await _detectProxy();
-    if (proxy) {
+    const port = await _detectProxy();
+    if (port) {
       const dohResult = await new Promise((resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error("doh_timeout")),
-          _getDohTimeoutMs(),
-        );
+        const timer = setTimeout(() => reject(new Error("doh_timeout")), 8000);
         const connReq = http.request({
-          host: proxy.host,
-          port: proxy.port,
+          host: _proxyHostCache,
+          port,
           method: "CONNECT",
           path: "dns.google:443",
-          timeout: _getDohTimeoutMs() - 3000,
+          timeout: 5000,
         });
         connReq.on("connect", (res, socket) => {
           if (res.statusCode !== 200) {
@@ -2779,12 +2247,12 @@ async function _resolveRelayIP() {
             {
               socket,
               hostname: "dns.google",
-              path: `/resolve?name=${relayHost}&type=A`,
+              path: `/resolve?name=${RELAY_HOST}&type=A`,
               method: "GET",
               headers: { Host: "dns.google" },
               servername: "dns.google",
               rejectUnauthorized: false,
-              timeout: _getDohTimeoutMs() - 2000,
+              timeout: 6000,
             },
             (resp) => {
               let d = "";
@@ -2846,18 +2314,18 @@ async function _resolveRelayIP() {
     const cfResult = await new Promise((cfResolve, cfReject) => {
       const timer = setTimeout(
         () => cfReject(new Error("cf_doh_timeout")),
-        _getDohTimeoutMs() - 2000,
+        6000,
       );
       const req = https.request(
         {
           hostname: "1.1.1.1",
-          path: `/dns-query?name=${relayHost}&type=A`,
+          path: `/dns-query?name=${RELAY_HOST}&type=A`,
           method: "GET",
           headers: {
             Accept: "application/dns-json",
             Host: "cloudflare-dns.com",
           },
-          timeout: _getDohTimeoutMs() - 3000,
+          timeout: 5000,
           rejectUnauthorized: false,
         },
         (resp) => {
@@ -2912,7 +2380,7 @@ async function fetchAccountQuota(email, password) {
       retryAfter: cd.nextAllowedTs - now,
     };
   }
-  _quotaFetchCooldown.set(key, { nextAllowedTs: now + _getQuotaMinInterval() });
+  _quotaFetchCooldown.set(key, { nextAllowedTs: now + QUOTA_MIN_INTERVAL });
 
   const loginResult = await getCachedToken(email, password);
   if (!loginResult.ok) {
@@ -2920,47 +2388,25 @@ async function fetchAccountQuota(email, password) {
     return { ok: false, error: loginResult.error };
   }
   const proto = encodeProtoString(loginResult.idToken);
-  const relayHost = _getRelayHost();
-  const planUrl = relayHost
-    ? `https://${relayHost}/windsurf/plan-status`
-    : null;
+  const planUrl = `https://${RELAY_HOST}/windsurf/plan-status`;
 
-  // v15: 5通道竞速 — Chromium原生优先, 官方API直连次之, 中继兜底
-  // 优先级: Chromium原生(万法归宗) > 官方(proxy) > 官方(direct) > Relay IP > Relay(proxy)
+  // v15.2: 4通道竞速 — 官方proxy优先, 直连次之, 中继兜底
+  // NOTE: Chromium native已移除 — Codeium/Windsurf gRPC端点不返回CORS headers,
+  //       webview fetch()必被浏览器CORS策略阻止 (Referer亦为forbidden header)
+  // 优先级: 官方(proxy) > 官方(direct) > Relay IP > Relay(proxy)
   const channels = [
-    // 通道0: Chromium原生 — 万法归宗 (系统代理自适应, 不依赖手动探测)
+    // 通道0: 官方API via proxy (最可靠: 官方服务器不限流WAM)
     async () => {
-      for (const url of _getOfficialPlanStatusUrls()) {
-        try {
-          const resp = await _nativeFetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/proto",
-              "connect-protocol-version": "1",
-            },
-            body: proto,
-            binary: true,
-            timeout: _getQuotaFetchTimeoutMs(),
-          });
-          if (resp.status === 200 && resp.data && resp.data.length > 20) {
-            return { status: resp.status, buf: Buffer.from(resp.data) };
-          }
-        } catch {}
-      }
-      throw new Error("all_official_native_failed");
-    },
-    // 通道1: 官方API via proxy (最可靠: 官方服务器不限流WAM)
-    async () => {
-      const proxy = await _detectProxy();
-      if (!proxy) throw new Error("no_proxy");
-      for (const url of _getOfficialPlanStatusUrls()) {
+      const port = await _detectProxy();
+      if (!port) throw new Error("no_proxy");
+      for (const url of OFFICIAL_PLAN_STATUS_URLS) {
         try {
           const resp = await _httpsPostRawViaProxy(
-            proxy.host,
-            proxy.port,
+            _proxyHostCache,
+            port,
             url,
             proto,
-            _getQuotaFetchTimeoutMs(),
+            10000,
           );
           if (resp.status === 200 && resp.buf && resp.buf.length > 20)
             return resp;
@@ -2968,37 +2414,30 @@ async function fetchAccountQuota(email, password) {
       }
       throw new Error("all_official_proxy_failed");
     },
-    // 通道2: 官方API直连 (无proxy, 适合可直连Google Cloud的网络)
+    // 通道1: 官方API直连 (无proxy, 适合可直连Google Cloud的网络)
     async () => {
-      for (const url of _getOfficialPlanStatusUrls()) {
+      for (const url of OFFICIAL_PLAN_STATUS_URLS) {
         try {
-          const resp = await _httpsPostRaw(url, proto, {
-            timeout: _getQuotaFetchTimeoutMs(),
-          });
+          const resp = await _httpsPostRaw(url, proto, { timeout: 10000 });
           if (resp.status === 200 && resp.buf && resp.buf.length > 20)
             return resp;
         } catch {}
       }
       throw new Error("all_official_direct_failed");
     },
-    // 通道3: Relay直连真实IP (DoH解析绕过fake-ip) — relay未配置时跳过
+    // 通道2: Relay直连真实IP (DoH解析绕过fake-ip)
     async () => {
-      if (!planUrl) throw new Error("relay_not_configured");
       const ip = await _resolveRelayIP();
       if (!ip) throw new Error("no_relay_ip");
-      return _httpsPostRaw(planUrl, proto, {
-        timeout: _getHttpDefaultTimeoutMs(),
-        hostname: ip,
-      });
+      return _httpsPostRaw(planUrl, proto, { timeout: 12000, hostname: ip });
     },
-    // 通道4: Relay via proxy (最后手段) — relay未配置时跳过
+    // 通道3: Relay via proxy (最后手段)
     async () => {
-      if (!planUrl) throw new Error("relay_not_configured");
-      const proxy = await _detectProxy();
-      if (!proxy) throw new Error("no_proxy");
+      const port = await _detectProxy();
+      if (!port) throw new Error("no_proxy");
       return _httpsPostRawViaProxy(
-        proxy.host,
-        proxy.port,
+        _proxyHostCache,
+        port,
         planUrl,
         proto,
         10000,
@@ -3014,9 +2453,9 @@ async function fetchAccountQuota(email, password) {
       .then((resp) => {
         if (resp.status === 429) {
           _quotaFetchCooldown.set(key, {
-            nextAllowedTs: Date.now() + _getQuota429Backoff(),
+            nextAllowedTs: Date.now() + QUOTA_429_BACKOFF,
           });
-          log(`${chName}: 429 → backoff ${_getQuota429Backoff() / 1000}s`);
+          log(`${chName}: 429 → backoff ${QUOTA_429_BACKOFF / 1000}s`);
           throw new Error("429");
         }
         if (resp.status === 200 && resp.buf && resp.buf.length > 50) {
@@ -3069,7 +2508,7 @@ function _updateAccountUsage(email, quota) {
   const effectiveWeeklyReset =
     apiWeeklyReset || calcWeeklyReset || prev.weeklyReset || 0;
 
-  // v9.3: weekly=-1(未知)时不覆盖, 保留历史值
+  // v10.2: weekly现在始终为0-100(proto3 absent=0), 不再有-1. 兜底保留旧值仅防极端情况
   const effectiveWeekly =
     quota.weekly >= 0
       ? quota.weekly
@@ -3106,16 +2545,13 @@ function _updateAccountUsage(email, quota) {
 // 策略: p3无条件触发(新命令) | p3超时4s(总max~12s) | 连续3次失败重置命令缓存
 async function injectAuth(idToken) {
   // v14.2: 连续失败3次 → 重置命令缓存, 允许Phase 4尝试备选命令
-  if (
-    _consecutiveInjectFails >= _getInjectResetThreshold() &&
-    _workingInjectCmd
-  ) {
+  if (_consecutiveInjectFails >= 3 && _workingInjectCmd) {
     log(
       `inject: ⚠️ ${_consecutiveInjectFails}次连续失败 → 重置命令缓存 (was: ${_workingInjectCmd})`,
     );
     _workingInjectCmd = null;
   }
-  const cmd = _workingInjectCmd || _getInjectCommands()[0];
+  const cmd = _workingInjectCmd || INJECT_COMMANDS[0];
   const t0 = Date.now();
   let gotCode0 = false;
 
@@ -3126,7 +2562,7 @@ async function injectAuth(idToken) {
     const r1 = await Promise.race([
       cmdP,
       new Promise((_, rej) =>
-        setTimeout(() => rej(new Error("p1_timeout")), _getInjectP1TimeoutMs()),
+        setTimeout(() => rej(new Error("p1_timeout")), 3000),
       ),
     ]);
     const ex1 = _extractInjectResult(r1);
@@ -3154,10 +2590,7 @@ async function injectAuth(idToken) {
       const r2 = await Promise.race([
         cmdP, // 同一个Promise — 不重叠, 不混乱
         new Promise((_, rej) =>
-          setTimeout(
-            () => rej(new Error("p2_timeout")),
-            _getInjectP2TimeoutMs(),
-          ),
+          setTimeout(() => rej(new Error("p2_timeout")), 4000),
         ),
       ]);
       const ex2 = _extractInjectResult(r2);
@@ -3183,7 +2616,7 @@ async function injectAuth(idToken) {
   // Phase 3 (v14.3): 无条件重试 — 无论code:0还是timeout, 发新命令·给provider第二次机会
   // 实证: code:0→p3成功率~50% | timeout→provider多为慢非hung·新命令常在4s内命中
   // 成本: 最多多等5s(1s冷却+4s超时), 但省掉外层retry的5s+7s=12s
-  await new Promise((r) => setTimeout(r, _getInjectP3CooldownMs()));
+  await new Promise((r) => setTimeout(r, 1000));
   log(
     `inject: p3 retry${gotCode0 ? " (code:0)" : " (timeout)"} [+${Date.now() - t0}ms]`,
   );
@@ -3192,7 +2625,7 @@ async function injectAuth(idToken) {
     const r3 = await Promise.race([
       retryP,
       new Promise((_, rej) =>
-        setTimeout(() => rej(new Error("p3_timeout")), _getInjectP3TimeoutMs()),
+        setTimeout(() => rej(new Error("p3_timeout")), 4000),
       ),
     ]);
     const ex3 = _extractInjectResult(r3);
@@ -3212,11 +2645,8 @@ async function injectAuth(idToken) {
   }
 
   // Phase 4 (v14.2): 备选命令 — 连续失败3次或未确认命令时, 尝试所有备选
-  if (
-    !_workingInjectCmd ||
-    _consecutiveInjectFails >= _getInjectP4Threshold()
-  ) {
-    for (const altCmd of _getInjectCommands()) {
+  if (!_workingInjectCmd || _consecutiveInjectFails >= 2) {
+    for (const altCmd of INJECT_COMMANDS) {
       if (altCmd === cmd) continue;
       log(`inject: p4 trying ${altCmd} [+${Date.now() - t0}ms]`);
       try {
@@ -3224,10 +2654,7 @@ async function injectAuth(idToken) {
         const r4 = await Promise.race([
           altP,
           new Promise((_, rej) =>
-            setTimeout(
-              () => rej(new Error("p4_timeout")),
-              _getInjectP4TimeoutMs(),
-            ),
+            setTimeout(() => rej(new Error("p4_timeout")), 5000),
           ),
         ]);
         const ex4 = _extractInjectResult(r4);
@@ -3278,27 +2705,27 @@ function _extractInjectResult(result) {
 // ── Firebase accounts:lookup — 获取账号创建时间 (官方API) ──
 async function firebaseLookup(idToken) {
   const payload = JSON.stringify({ idToken });
-  for (const key of _getFirebaseKeys()) {
+  for (const key of FIREBASE_KEYS) {
     const url = `https://${FIREBASE_HOST}/v1/accounts:lookup?key=${key}`;
     try {
       const result = await _httpsPost(url, payload, {
-        timeout: _getFirebaseDirectTimeoutMs(),
-        headers: { Referer: _getFirebaseReferer() },
+        timeout: 8000,
+        headers: { Referer: FIREBASE_REFERER },
       });
       if (result?.users?.[0]) return result.users[0];
     } catch {}
     // 也尝试代理通道
     try {
-      const proxy = await _detectProxy();
-      if (proxy) {
+      const port = await _detectProxy();
+      if (port) {
         const url2 = `https://${FIREBASE_HOST}/v1/accounts:lookup?key=${key}`;
         const result = await _httpsViaProxy(
-          proxy.host,
-          proxy.port,
+          _proxyHostCache,
+          port,
           url2,
           payload,
-          _getQuotaFetchTimeoutMs(),
-          { Referer: _getFirebaseReferer() },
+          10000,
+          { Referer: FIREBASE_REFERER },
         );
         if (result?.users?.[0]) return result.users[0];
       }
@@ -3443,7 +2870,7 @@ async function verifyAndPurgeExpired(store, opts = {}) {
     }
 
     // 限速保护
-    await new Promise((r) => setTimeout(r, _getDeepProbeThrottleMs()));
+    await new Promise((r) => setTimeout(r, 300));
   }
 
   // Step 3: 缓存兜底 — 深度探测可能遗漏的(网络失败等), 用缓存数据补刀
@@ -3560,7 +2987,7 @@ async function switchToAccount(email, password) {
   if (
     _prewarmedToken &&
     _prewarmedToken.email === emailKey &&
-    Date.now() - _prewarmedToken.ts < _getTokenCacheTtl()
+    Date.now() - _prewarmedToken.ts < TOKEN_CACHE_TTL
   ) {
     idToken = _prewarmedToken.idToken;
     log(
@@ -3621,7 +3048,7 @@ async function switchToAccount(email, password) {
     idToken = loginResult.idToken;
     _tokenCache.set(emailKey, {
       idToken,
-      expiresAt: Date.now() + _getTokenCacheTtl(),
+      expiresAt: Date.now() + TOKEN_CACHE_TTL,
     });
     _tokenCacheDirty = true;
     _saveTokenCache();
@@ -3686,7 +3113,7 @@ async function _prewarmCandidateToken(candidateIndex) {
     _prewarmedToken = {
       email: emailKey,
       idToken: cached.idToken,
-      ts: cached.expiresAt - _getTokenCacheTtl(),
+      ts: cached.expiresAt - TOKEN_CACHE_TTL,
     };
     log(`🔥 prewarm: ${acc.email.substring(0, 20)} already cached`);
     // v11: 即使主候选已缓存, 仍异步预热额外候选
@@ -3706,7 +3133,7 @@ async function _prewarmCandidateToken(candidateIndex) {
       };
       _tokenCache.set(emailKey, {
         idToken: loginResult.idToken,
-        expiresAt: Date.now() + _getTokenCacheTtl(),
+        expiresAt: Date.now() + TOKEN_CACHE_TTL,
       });
       _tokenCacheDirty = true;
       log(
@@ -3750,7 +3177,7 @@ async function _prewarmPool(excludeIndex) {
       if (lr.ok) {
         _tokenCache.set(ek, {
           idToken: lr.idToken,
-          expiresAt: Date.now() + _getTokenCacheTtl(),
+          expiresAt: Date.now() + TOKEN_CACHE_TTL,
         });
         _tokenCacheDirty = true;
         warmed++;
@@ -3767,14 +3194,41 @@ async function _prewarmPool(excludeIndex) {
 // 效果: 任意手动切号 → 必然cache HIT → 跳过3-4s Firebase登录 → inject-only切号
 // 节奏: N个账号/50分钟TTL → 每~(50*60/N)秒刷新1个 → CPU近零·网络极低
 // 道法自然: 水不等溃堤才流, Token不等切号才取 — 始终备好, 一触即发
-// TOKEN_POOL_* / POOL_* 常量 → getter化 (v17.1 去芜留菁)
+const TOKEN_POOL_BURST_MS = 5000; // 冲刺模式: 5秒/轮 (前3分钟快速填充)
+const TOKEN_POOL_CRUISE_MS = 45000; // 巡航模式: 45秒/轮 (v13.2: 加速恢复·水流不息)
+const TOKEN_POOL_BURST_DURATION = 180000; // 冲刺持续3分钟
+const TOKEN_POOL_MARGIN = 600000; // 提前10分钟续期
+const POOL_PARALLEL_BURST = 3; // v13: 冲刺并行度 (64÷3≈22 ticks×5s≈110s填满 vs 串行320s)
+const POOL_PARALLEL_CRUISE = 1; // v13: 巡航并行度 (低压维持)
 let _tokenPoolStartTs = 0; // 活水池启动时间
 let _tokenPoolTickCount = 0; // v13: pool自己的tick计数器
 const _tokenPoolBlacklist = new Set(); // 永久失败账号 (INVALID_PASSWORD等)
 const _poolFailStreak = new Map(); // email -> {count, lastFail} 连续网络失败计数
+const POOL_TEMP_BAN_THRESHOLD = 3; // 连续失败N次后临时拉黑
+const POOL_TEMP_BAN_DURATION = 900000; // 临时拉黑15分钟
+// v15.1: 全局断路器 — 当连续不同账号都all_channels_failed时暂停池, 避免无效锤击
+let _poolCircuitBreakerUntil = 0; // 断路器截止时间 (0=正常运行)
+let _poolConsecutiveGlobalFails = 0; // 连续全局失败计数 (跨账号)
+const POOL_CIRCUIT_BREAKER_THRESHOLD = 3; // 连续N个不同账号失败 → 触发断路
+const POOL_CIRCUIT_BREAKER_DURATION = 300000; // 断路5分钟 (等网络恢复)
 
 async function _tokenPoolTick() {
   if (!_store || _switching || !isWamMode()) return;
+  // v15.1: 全局断路器 — 网络不通时暂停, 不无谓消耗
+  if (_poolCircuitBreakerUntil > Date.now()) {
+    const remainSec = Math.round(
+      (_poolCircuitBreakerUntil - Date.now()) / 1000,
+    );
+    if (_tokenPoolTickCount % 5 === 0)
+      log(`🔥 pool: circuit breaker active, ${remainSec}s remaining`);
+    _tokenPoolTickCount++;
+    return;
+  }
+  if (_poolCircuitBreakerUntil > 0 && Date.now() >= _poolCircuitBreakerUntil) {
+    _poolCircuitBreakerUntil = 0;
+    _poolConsecutiveGlobalFails = 0;
+    log("🔥 pool: circuit breaker released — 水到渠成");
+  }
   const accounts = _store.accounts;
   if (!accounts || accounts.length === 0) return;
 
@@ -3792,14 +3246,14 @@ async function _tokenPoolTick() {
     const streak = _poolFailStreak.get(ek);
     if (
       streak &&
-      streak.count >= _getPoolTempBanThreshold() &&
-      Date.now() - streak.lastFail < _getPoolTempBanDuration()
+      streak.count >= POOL_TEMP_BAN_THRESHOLD &&
+      Date.now() - streak.lastFail < POOL_TEMP_BAN_DURATION
     )
       continue;
     if (
       streak &&
-      streak.count >= _getPoolTempBanThreshold() &&
-      Date.now() - streak.lastFail >= _getPoolTempBanDuration()
+      streak.count >= POOL_TEMP_BAN_THRESHOLD &&
+      Date.now() - streak.lastFail >= POOL_TEMP_BAN_DURATION
     )
       _poolFailStreak.delete(ek); // 解禁
     const cached = _tokenCache.get(ek);
@@ -3807,9 +3261,9 @@ async function _tokenPoolTick() {
     let urgency = 0;
     if (!cached || cached.expiresAt <= Date.now()) {
       urgency = 3; // 无缓存或已过期: 最紧急
-    } else if (cached.expiresAt < Date.now() + _getTokenPoolMargin()) {
+    } else if (cached.expiresAt < Date.now() + TOKEN_POOL_MARGIN) {
       urgency = 2; // 即将过期: 紧急
-    } else if (cached.expiresAt < Date.now() + _getTokenCacheTtl() * 0.6) {
+    } else if (cached.expiresAt < Date.now() + TOKEN_CACHE_TTL * 0.6) {
       urgency = 1; // 已过半: 低优先
     } else {
       continue; // 充足
@@ -3820,7 +3274,7 @@ async function _tokenPoolTick() {
   _tokenPoolTickCount++;
   // v13: pool自己的周期报告 (每10 ticks或填满时)
   const isBurstPhase =
-    Date.now() - _tokenPoolStartTs < _getTokenPoolBurstDuration();
+    Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
   if (
     _tokenPoolTickCount % 10 === 0 ||
     _tokenPoolTickCount <= 3 ||
@@ -3837,8 +3291,8 @@ async function _tokenPoolTick() {
   candidates.sort((a, b) => b.urgency - a.urgency || a.exp - b.exp);
 
   // v13: 冲刺期多路并发, 巡航期单路 — 上善若水, 水善利万物而不争
-  const isBurst = Date.now() - _tokenPoolStartTs < _getTokenPoolBurstDuration();
-  const parallel = isBurst ? _getPoolParallelBurst() : _getPoolParallelCruise();
+  const isBurst = Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
+  const parallel = isBurst ? POOL_PARALLEL_BURST : POOL_PARALLEL_CRUISE;
   const batch = candidates.slice(0, parallel);
 
   await Promise.allSettled(
@@ -3851,10 +3305,11 @@ async function _tokenPoolTick() {
         if (lr.ok) {
           _tokenCache.set(ek, {
             idToken: lr.idToken,
-            expiresAt: Date.now() + _getTokenCacheTtl(),
+            expiresAt: Date.now() + TOKEN_CACHE_TTL,
           });
           _tokenCacheDirty = true;
           _poolFailStreak.delete(ek); // 成功则清除失败计数
+          _poolConsecutiveGlobalFails = 0; // v15.1: 有一个成功→断路器复位
           if (idx === _predictiveCandidate) {
             _prewarmedToken = {
               email: ek,
@@ -3863,11 +3318,21 @@ async function _tokenPoolTick() {
             };
           }
         } else {
+          const errMsg = lr.error || "";
+          // v15.1: TOO_MANY_ATTEMPTS = Firebase IP级别限流 → 立即触发断路器
+          if (/TOO_MANY_ATTEMPTS/.test(errMsg)) {
+            log(
+              `🔥 pool: Firebase rate-limit detected! triggering circuit breaker`,
+            );
+            _poolCircuitBreakerUntil =
+              Date.now() + POOL_CIRCUIT_BREAKER_DURATION;
+            return; // 不计入per-account失败
+          }
           // v13: 记录失败原因 (以前静默吞掉 → 池为什么不填无从诊断)
-          if (/INVALID|NOT_FOUND|DISABLED|WRONG/.test(lr.error || "")) {
+          if (/INVALID|NOT_FOUND|DISABLED|WRONG/.test(errMsg)) {
             _tokenPoolBlacklist.add(ek);
             log(
-              `🔥 pool: blacklisted ${acc.email.substring(0, 20)} (${lr.error})`,
+              `🔥 pool: blacklisted ${acc.email.substring(0, 20)} (${errMsg})`,
             );
           } else {
             // v13.4: 连续网络失败计数 — 多言数穷不如守中
@@ -3875,13 +3340,26 @@ async function _tokenPoolTick() {
             fs0.count++;
             fs0.lastFail = Date.now();
             _poolFailStreak.set(ek, fs0);
-            if (fs0.count === _getPoolTempBanThreshold()) {
+            // v15.1: 全局断路器 — all_channels_failed说明网络层问题, 非账号问题
+            if (/all_channels_failed/.test(errMsg)) {
+              _poolConsecutiveGlobalFails++;
+              if (
+                _poolConsecutiveGlobalFails >= POOL_CIRCUIT_BREAKER_THRESHOLD
+              ) {
+                _poolCircuitBreakerUntil =
+                  Date.now() + POOL_CIRCUIT_BREAKER_DURATION;
+                log(
+                  `🔥 pool: CIRCUIT BREAKER — ${_poolConsecutiveGlobalFails} consecutive all_channels_failed, pausing ${POOL_CIRCUIT_BREAKER_DURATION / 60000}min`,
+                );
+              }
+            }
+            if (fs0.count === POOL_TEMP_BAN_THRESHOLD) {
               log(
-                `🔥 pool: temp-ban ${acc.email.substring(0, 20)} (×${fs0.count} consecutive fails, ${_getPoolTempBanDuration() / 60000}min)`,
+                `🔥 pool: temp-ban ${acc.email.substring(0, 20)} (×${fs0.count} consecutive fails, ${POOL_TEMP_BAN_DURATION / 60000}min)`,
               );
             } else {
               log(
-                `🔥 pool: login fail ${acc.email.substring(0, 20)} (${lr.error || "unknown"}) [×${fs0.count}]`,
+                `🔥 pool: login fail ${acc.email.substring(0, 20)} (${errMsg || "unknown"}) [×${fs0.count}]`,
               );
             }
           }
@@ -3913,7 +3391,7 @@ function _loadTokenCache() {
     if (loaded > 0) {
       log(`🔥 pool: loaded ${loaded} tokens from disk (survive restart)`);
       // 有持久缓存 → 跳过冲刺, 直接巡航
-      _tokenPoolStartTs = Date.now() - _getTokenPoolBurstDuration();
+      _tokenPoolStartTs = Date.now() - TOKEN_POOL_BURST_DURATION;
     }
   } catch {}
 }
@@ -3935,9 +3413,8 @@ function _startTokenPool() {
   _tokenPoolStartTs = _tokenPoolStartTs || Date.now();
   // v13: 冲刺模式前3分钟每5s并行填充N个, 快速填满缓存
   const scheduleNext = () => {
-    const isBurst =
-      Date.now() - _tokenPoolStartTs < _getTokenPoolBurstDuration();
-    const interval = isBurst ? _getTokenPoolBurstMs() : _getTokenPoolCruiseMs();
+    const isBurst = Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
+    const interval = isBurst ? TOKEN_POOL_BURST_MS : TOKEN_POOL_CRUISE_MS;
     _tokenPoolTimer = setTimeout(async () => {
       await _tokenPoolTick();
       if (_tokenPoolTimer) scheduleNext();
@@ -3945,9 +3422,9 @@ function _startTokenPool() {
   };
   scheduleNext();
   // 首次立即触发
-  setTimeout(() => _tokenPoolTick(), _getEngineFirstTickDelayMs());
+  setTimeout(() => _tokenPoolTick(), 2000);
   log(
-    `engine: token pool started (burst ${_getTokenPoolBurstMs() / 1000}s×${_getPoolParallelBurst()}并发×${_getTokenPoolBurstDuration() / 60000}min → cruise ${_getTokenPoolCruiseMs() / 1000}s) [v13.2]`,
+    `engine: token pool started (burst ${TOKEN_POOL_BURST_MS / 1000}s×${POOL_PARALLEL_BURST}并发×${TOKEN_POOL_BURST_DURATION / 60000}min → cruise ${TOKEN_POOL_CRUISE_MS / 1000}s) [v13.2]`,
   );
 }
 
@@ -3975,7 +3452,7 @@ function _ensureEngines() {
   // monitor: setTimeout 链式循环 (非 setInterval, 避免堆积)
   if (!_monitorTimer) {
     const monitorInterval = () =>
-      Date.now() < _burstUntil ? _getBurstMs() : _getMonitorFastMs();
+      Date.now() < _burstUntil ? BURST_MS : MONITOR_FAST_MS;
     const scheduleMonitor = () => {
       _monitorTimer = setTimeout(async () => {
         await monitorActiveQuota();
@@ -3987,9 +3464,9 @@ function _ensureEngines() {
   }
   // scan: setInterval 定时触发 (scanBackgroundQuota 自带 _scanRunning 防重入)
   if (!_scanTimer) {
-    _scanTimer = setInterval(() => scanBackgroundQuota(), _getScanSlowMs());
+    _scanTimer = setInterval(() => scanBackgroundQuota(), SCAN_SLOW_MS);
     // 首次立即触发一轮
-    setTimeout(() => scanBackgroundQuota(), _getEngineFirstTickDelayMs());
+    setTimeout(() => scanBackgroundQuota(), 2000);
     log("engine: scan started");
   }
   // v12: 永续Token活水池
@@ -4010,13 +3487,13 @@ function _stopEngines() {
   }
 }
 
-// 活跃账号实时监测 (快速循环, 每_getMonitorFastMs())
+// 活跃账号实时监测 (快速循环, 每MONITOR_FAST_MS)
 async function monitorActiveQuota() {
   // v9.3: 切号锁超时保护 — 防止switchToAccount挂起导致monitor永久暂停
   if (
     _switching &&
     _switchingStartTime > 0 &&
-    Date.now() - _switchingStartTime > _getSwitchLockForceReleaseMs()
+    Date.now() - _switchingStartTime > 120000
   ) {
     log(
       `⚠️ switching lock timeout (${Math.round((Date.now() - _switchingStartTime) / 1000)}s) — force release`,
@@ -4050,7 +3527,7 @@ async function monitorActiveQuota() {
     const emailKey = acc.email.toLowerCase();
     const prev = _quotaSnapshots.get(emailKey);
     const now = Date.now();
-    // v9.3: weekly=-1(未知)时保留前值, 不存入-1污染快照
+    // v10.2: weekly现在始终0-100(absent=0), 兜底逻辑仅防极端情况
     const snapWeekly =
       result.weekly >= 0 ? result.weekly : prev ? prev.weekly : 0;
     _quotaSnapshots.set(emailKey, {
@@ -4067,7 +3544,7 @@ async function monitorActiveQuota() {
       // v9.3: weekly未知时不参与变化检测, 只看daily
       const wDelta = result.weekly >= 0 ? prev.weekly - result.weekly : 0;
       const hasFluctuation =
-        dDelta > _getChangeThreshold() || wDelta > _getChangeThreshold();
+        dDelta > CHANGE_THRESHOLD || wDelta > CHANGE_THRESHOLD;
       const autoRotate = vscode.workspace
         .getConfiguration("wam")
         .get("autoRotate", true);
@@ -4076,7 +3553,7 @@ async function monitorActiveQuota() {
       if (hasFluctuation) {
         _totalChangesDetected++;
         _consecutiveChanges++;
-        _burstUntil = Date.now() + _getBurstDuration();
+        _burstUntil = Date.now() + BURST_DURATION;
         _store.markInUse(acc.email); // 消息锚定: 波动即标记, 不等累积
         log(
           `📊 D${prev.daily}→${result.daily}(Δ${dDelta.toFixed(1)}) W${prev.weekly}→${result.weekly}(Δ${wDelta.toFixed(1)}) ${acc.email.substring(0, 25)} [×${_consecutiveChanges}]`,
@@ -4093,10 +3570,9 @@ async function monitorActiveQuota() {
         // ── 消息锚定核心: 波动=有人发消息→立即切到新账号, 确保下条消息用新号 ──
         // v7.3: 自动切号冷却 — 上次切号15s内不再触发, 避免连续切号风暴
         // v9.2: 活跃账号已锁定 → 不自动切走 (道法自然: 用户主动锁定优先于自动策略)
-        const switchCooldown =
-          Date.now() - _lastSwitchTime < _getSwitchCooldownMs();
+        const switchCooldown = Date.now() - _lastSwitchTime < 15000;
         const injectCooldown =
-          Date.now() - _lastInjectFail < _getInjectFailCooldown(); // v13.4
+          Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
         if (acc.skipAutoSwitch) {
           log(`📌 活跃账号已锁定·跳过自动切号: ${acc.email.substring(0, 20)}`);
         } else if (injectCooldown && !_switching) {
@@ -4108,7 +3584,6 @@ async function monitorActiveQuota() {
             if (
               !candAcc ||
               !candAcc.password ||
-              candAcc.skipAutoSwitch ||
               _isClaimedByOther(candAcc.email)
             )
               bestI = -1;
@@ -4146,7 +3621,7 @@ async function monitorActiveQuota() {
                   _quotaSnapshots.delete(bestAcc.email.toLowerCase());
                   _snapshotDirty = true;
                   _schedulePersist();
-                  _burstUntil = Date.now() + _getBurstDuration();
+                  _burstUntil = Date.now() + BURST_DURATION;
                   _consecutiveChanges = 0;
                   _predictiveCandidate = _store.getBestIndex(bestI, true);
                   if (_predictiveCandidate >= 0) {
@@ -4155,10 +3630,7 @@ async function monitorActiveQuota() {
                     );
                     _prewarmCandidateToken(_predictiveCandidate);
                   }
-                  setTimeout(
-                    () => monitorActiveQuota(),
-                    _getPostSwitchMonitorDelayMs(),
-                  );
+                  setTimeout(() => monitorActiveQuota(), 1500);
                   vscode.window.showInformationMessage(
                     `WAM: 消息锚定 → 已切换到 ${switchResult.account}`,
                   );
@@ -4178,9 +3650,7 @@ async function monitorActiveQuota() {
                     log(
                       `auto-switch FAIL#${_retry}: ${switchResult.error} — 3s后重试`,
                     );
-                    await new Promise((r) =>
-                      setTimeout(r, _getAutoRetryDelayMs()),
-                    );
+                    await new Promise((r) => setTimeout(r, 3000));
                     continue;
                   }
                   log(`auto-switch FAIL: ${switchResult.error}`);
@@ -4204,35 +3674,34 @@ async function monitorActiveQuota() {
       }
 
       // ── 预判候选: 额度<25%时提前预选, 波动时零延迟切入 ──
-      // v9.3: 用安全weekly值(snapWeekly), 不用可能为-1的result.weekly
+      // v10.2: snapWeekly已兑底(absent=0), 始终安全
       const effQuota = drought
         ? result.daily
         : Math.min(result.daily, snapWeekly);
       if (
-        effQuota < _getPredictiveThreshold() &&
+        effQuota < PREDICTIVE_THRESHOLD &&
         _predictiveCandidate < 0 &&
         autoRotate
       ) {
         _predictiveCandidate = _store.getBestIndex(activeI, true);
         if (_predictiveCandidate >= 0) {
           log(
-            `🔮 预判: 额度${effQuota.toFixed(0)}%<${_getPredictiveThreshold()}%, 预选→${_store.get(_predictiveCandidate).email.substring(0, 20)}`,
+            `🔮 预判: 额度${effQuota.toFixed(0)}%<${PREDICTIVE_THRESHOLD}%, 预选→${_store.get(_predictiveCandidate).email.substring(0, 20)}`,
           );
           _prewarmCandidateToken(_predictiveCandidate); // v8: 立即预热Token, 切号时零延迟
         }
       }
-      if (effQuota >= _getPredictiveThreshold()) _predictiveCandidate = -1;
+      if (effQuota >= PREDICTIVE_THRESHOLD) _predictiveCandidate = -1;
 
       // ── 耗尽保护: 额度极低时强制切号 (即使无波动, 防止卡死) ──
-      // v9.3: 用安全weekly值
+      // v10.2: snapWeekly始终安全
       const isExhausted = drought
-        ? result.daily < _getAutoSwitchThreshold()
-        : Math.min(result.daily, snapWeekly) < _getAutoSwitchThreshold();
+        ? result.daily < AUTO_SWITCH_THRESHOLD
+        : Math.min(result.daily, snapWeekly) < AUTO_SWITCH_THRESHOLD;
 
-      const exhaustCooldown =
-        Date.now() - _lastSwitchTime < _getSwitchCooldownMs();
+      const exhaustCooldown = Date.now() - _lastSwitchTime < 15000;
       const exhaustInjectCd =
-        Date.now() - _lastInjectFail < _getInjectFailCooldown(); // v13.4
+        Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
       if (
         isExhausted &&
         autoRotate &&
@@ -4244,17 +3713,17 @@ async function monitorActiveQuota() {
         const hrsToReset = hoursUntilDailyReset();
 
         if (
-          result.daily < _getAutoSwitchThreshold() &&
-          hrsToReset <= _getWaitResetHours()
+          result.daily < AUTO_SWITCH_THRESHOLD &&
+          hrsToReset <= WAIT_RESET_HOURS
         ) {
           log(
             `⏳ Daily耗尽(${result.daily}%) 但${hrsToReset.toFixed(1)}h后重置 → 等待`,
           );
         } else if (
           !drought &&
-          result.daily >= _getAutoSwitchThreshold() &&
-          snapWeekly < _getAutoSwitchThreshold() &&
-          hoursUntilWeeklyReset() <= _getWaitResetHours()
+          result.daily >= AUTO_SWITCH_THRESHOLD &&
+          snapWeekly < AUTO_SWITCH_THRESHOLD &&
+          hoursUntilWeeklyReset() <= WAIT_RESET_HOURS
         ) {
           log(
             `⏳ Weekly耗尽(${snapWeekly}%) 但${hoursUntilWeeklyReset().toFixed(1)}h后重置 → 等待`,
@@ -4262,21 +3731,13 @@ async function monitorActiveQuota() {
         } else {
           const reason = drought
             ? `Daily耗尽(${result.daily}%)`
-            : snapWeekly < _getAutoSwitchThreshold()
+            : snapWeekly < AUTO_SWITCH_THRESHOLD
               ? `Weekly耗尽(${snapWeekly}%)`
               : `Daily耗尽(${result.daily}%)`;
-          let bestI = _predictiveCandidate >= 0 ? _predictiveCandidate : -1;
-          if (bestI >= 0) {
-            const candAcc2 = _store.get(bestI);
-            if (
-              !candAcc2 ||
-              !candAcc2.password ||
-              candAcc2.skipAutoSwitch ||
-              _isClaimedByOther(candAcc2.email)
-            )
-              bestI = -1;
-          }
-          if (bestI < 0) bestI = _store.getBestIndex(activeI, true);
+          let bestI =
+            _predictiveCandidate >= 0
+              ? _predictiveCandidate
+              : _store.getBestIndex(activeI, true);
           if (bestI >= 0) {
             let bestAcc = _store.get(bestI);
             log(`⚡ 耗尽保护: ${reason} → ${bestAcc.email.substring(0, 20)}`);
@@ -4309,11 +3770,8 @@ async function monitorActiveQuota() {
                   _quotaSnapshots.delete(bestAcc.email.toLowerCase());
                   _snapshotDirty = true;
                   _schedulePersist();
-                  _burstUntil = Date.now() + _getBurstDuration();
-                  setTimeout(
-                    () => monitorActiveQuota(),
-                    _getPostSwitchMonitorDelayMs(),
-                  );
+                  _burstUntil = Date.now() + BURST_DURATION;
+                  setTimeout(() => monitorActiveQuota(), 1500);
                   vscode.window.showInformationMessage(
                     `WAM: ${reason} → 切换到 ${sr.account}`,
                   );
@@ -4330,9 +3788,7 @@ async function monitorActiveQuota() {
                     log(
                       `exhaust-switch FAIL#${_retry}: ${sr.error} — 3s后重试`,
                     );
-                    await new Promise((r) =>
-                      setTimeout(r, _getAutoRetryDelayMs()),
-                    );
+                    await new Promise((r) => setTimeout(r, 3000));
                     continue;
                   }
                   log(`exhaust-switch FAIL: ${sr.error}`);
@@ -4356,10 +3812,7 @@ async function monitorActiveQuota() {
     }
 
     // 节流落盘: 每30秒最多保存一次 (监测循环3-5s但磁盘写入无需那么频繁)
-    if (
-      !_lastMonitorSaveTs ||
-      Date.now() - _lastMonitorSaveTs > _getMonitorSaveThrottleMs()
-    ) {
+    if (!_lastMonitorSaveTs || Date.now() - _lastMonitorSaveTs > 30000) {
       _store.save();
       _lastMonitorSaveTs = Date.now();
     }
@@ -4371,13 +3824,13 @@ async function monitorActiveQuota() {
   }
 }
 
-// 后台全量扫描 (慢速, 每轮扫描_getScanBatchSize()个账号)
+// 后台全量扫描 (慢速, 每轮扫描SCAN_BATCH_SIZE个账号)
 async function scanBackgroundQuota() {
   // v9.3: 切号锁超时保护 (与monitor同步)
   if (
     _switching &&
     _switchingStartTime > 0 &&
-    Date.now() - _switchingStartTime > _getSwitchLockForceReleaseMs()
+    Date.now() - _switchingStartTime > 120000
   ) {
     log(`⚠️ scan: switching lock timeout — force release`);
     _switching = false;
@@ -4400,13 +3853,13 @@ async function scanBackgroundQuota() {
     });
     let batch;
     if (uncheckedAccs.length > 0) {
-      batch = uncheckedAccs.slice(0, _getScanBatchSize());
+      batch = uncheckedAccs.slice(0, SCAN_BATCH_SIZE);
       log(`scan: prioritizing ${uncheckedAccs.length} unchecked accounts`);
     } else {
       // 常规轮询偏移
       if (_scanOffset >= pwAccounts.length) _scanOffset = 0;
-      batch = pwAccounts.slice(_scanOffset, _scanOffset + _getScanBatchSize());
-      _scanOffset += _getScanBatchSize();
+      batch = pwAccounts.slice(_scanOffset, _scanOffset + SCAN_BATCH_SIZE);
+      _scanOffset += SCAN_BATCH_SIZE;
     }
 
     let scanned = 0,
@@ -4431,7 +3884,7 @@ async function scanBackgroundQuota() {
       try {
         const result = await fetchAccountQuota(acc.email, acc.password);
         if (result.ok) {
-          // v9.3: weekly=-1(未知)时保留前值, 不存入-1污染快照
+          // v10.2: weekly现在始终0-100(absent=0), 兜底逻辑仅防极端情况
           const scanSnapW =
             result.weekly >= 0
               ? result.weekly
@@ -4457,8 +3910,8 @@ async function scanBackgroundQuota() {
             const wDelta =
               result.weekly >= 0 && baseW >= 0 ? baseW - result.weekly : 0;
             if (
-              Math.abs(dDelta) > _getChangeThreshold() ||
-              Math.abs(wDelta) > _getChangeThreshold()
+              Math.abs(dDelta) > CHANGE_THRESHOLD ||
+              Math.abs(wDelta) > CHANGE_THRESHOLD
             ) {
               _store.markInUse(acc.email);
               changed++;
@@ -4472,7 +3925,7 @@ async function scanBackgroundQuota() {
         }
       } catch {}
 
-      await new Promise((r) => setTimeout(r, _getScanBatchThrottleMs()));
+      await new Promise((r) => setTimeout(r, 400));
     }
     _schedulePersist();
 
@@ -4483,7 +3936,7 @@ async function scanBackgroundQuota() {
     const now = Date.now();
     let expiredCount = 0;
     for (const [email, info] of _store._inUse) {
-      if (now - info.lastChange > _getInuseCooldownMs()) {
+      if (now - info.lastChange > INUSE_COOLDOWN_MS) {
         _store._inUse.delete(email);
         expiredCount++;
         log(
@@ -4498,7 +3951,7 @@ async function scanBackgroundQuota() {
 
     if (scanned > 0 || changed > 0) {
       log(
-        `scan: batch[${_scanOffset - _getScanBatchSize()}+${batch.length}] ${scanned}ok ${changed}changed inUse=${_store._inUse.size}`,
+        `scan: batch[${_scanOffset - SCAN_BATCH_SIZE}+${batch.length}] ${scanned}ok ${changed}changed inUse=${_store._inUse.size}`,
       );
     }
     _store.save();
@@ -4569,7 +4022,7 @@ async function scanMissingExpiry() {
       _store.save();
       refreshAll();
     }
-    await new Promise((r) => setTimeout(r, _getScanBatchThrottleMs()));
+    await new Promise((r) => setTimeout(r, 400));
   }
 
   _store.save();
@@ -4586,7 +4039,8 @@ function updateStatusBar() {
   // v7.4: 官方模式下最小化显示 — 不泄露账号/额度/池子信息
   if (_mode === "official") {
     _statusBarItem.text = "$(key) 官方模式";
-    _statusBarItem.tooltip = `WAM v${WAM_VERSION} [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式`;
+    _statusBarItem.tooltip =
+      "WAM v10.0 [官方模式] — 所有切号功能已停止\n点击打开管理面板，可切回WAM模式";
     return;
   }
   const s = _store.getPoolStats();
@@ -4603,7 +4057,7 @@ function updateStatusBar() {
     const monTag = _monitorActive ? "$(sync~spin)" : "$(zap)";
     _statusBarItem.text = `${monTag}${droughtTag} D${liveD}%·W${liveW}% ${s.available}/${s.pwCount}号${inUseTag}${waitTag}`;
     _statusBarItem.tooltip =
-      `WAM v${WAM_VERSION} [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
+      `WAM v10.0 [WAM切号]${s.drought ? " [🏜️Weekly干旱模式·只看D]" : ""}\n` +
       `活跃: ${activeAcc.email}\n${h.plan}\n` +
       `号池: ${s.available}可用 · ${s.exhausted}耗尽 · ${s.waiting}等重置\n` +
       (s.drought
@@ -4614,7 +4068,7 @@ function updateStatusBar() {
       `监测: ${_totalMonitorCycles}轮 · ${_totalChangesDetected}次变动`;
   } else {
     _statusBarItem.text = `$(zap) ${s.pwCount}号`;
-    _statusBarItem.tooltip = `WAM v${WAM_VERSION} [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
+    _statusBarItem.tooltip = `WAM v10.0 [WAM切号] · 未选择活跃账号\n日重置: ${s.hrsToDaily.toFixed(1)}h后 · 周重置: ${s.hrsToWeekly.toFixed(1)}h后`;
   }
 }
 
@@ -4648,7 +4102,7 @@ async function handleWebviewMessage(msg) {
       // v7.3: 手动抢占机制 — 如果_switching已超过30s, 强制释放锁允许手动切号
       if (_switching) {
         const lockAge = Date.now() - _switchingStartTime;
-        if (lockAge < _getSwitchLockPatienceMs()) {
+        if (lockAge < 30000) {
           vscode.window.showWarningMessage(
             `WAM: 正在切换中(${Math.round(lockAge / 1000)}s)...请稍候`,
           );
@@ -4764,11 +4218,6 @@ async function handleWebviewMessage(msg) {
       const acc3 = _store.get(msg.index);
       if (acc3) {
         acc3.skipAutoSwitch = !acc3.skipAutoSwitch;
-        // v17.1: 锁定时立即失效预判候选 — 道法自然: 锁即不可选
-        if (acc3.skipAutoSwitch && _predictiveCandidate === msg.index) {
-          _predictiveCandidate = -1;
-          log(`🔒 预判候选已失效: ${acc3.email.substring(0, 20)} 已锁定`);
-        }
         _store.save();
         refreshAll();
       }
@@ -4850,18 +4299,9 @@ class WamViewProvider {
   }
   resolveWebviewView(webviewView) {
     this._view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      retainContextWhenHidden: true,
-    };
+    webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = buildHtml(this._store);
     webviewView.webview.onDidReceiveMessage(handleWebviewMessage);
-    // v15.1: 通知bridge就绪 — 道法自然: webview可用时才启动依赖native通道的引擎
-    _onBridgeReady();
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) _onBridgeReady();
-    });
-    log("bridge: sidebar webview resolved (retainContextWhenHidden)");
   }
   refresh() {
     if (this._view) this._view.webview.html = buildHtml(this._store);
@@ -4886,11 +4326,8 @@ function openEditorPanel() {
   _editorPanel.webview.onDidReceiveMessage(handleWebviewMessage);
   _editorPanel.onDidDispose(() => {
     _editorPanel = null;
-    // v15.1: editor关闭时, 如果sidebar也没有, 标记bridge不可用
-    if (!(_sidebarProvider && _sidebarProvider._view)) _bridgeReady = false;
+    _bridgeReady = false;
   });
-  // v15.1: editor panel也是bridge — 通知就绪
-  _onBridgeReady();
 }
 
 // ============================================================
@@ -5137,13 +4574,13 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .row.expired-row{opacity:.45;background:#1a0a0a}
 .chk{width:14px;height:14px;accent-color:var(--btn);cursor:pointer;flex-shrink:0}
 .dm{width:22px;height:16px;border-radius:3px;font-size:9px;font-weight:700;text-align:center;line-height:16px;flex-shrink:0}
-.dm.shop{background:#553399;color:var(--blue)}
-.dm.yh{background:#4a1564;color:var(--blue)}
-.dm.o{background:#333;color:var(--blue)}
+.dm.shop{background:#553399;color:#c8a2ff}
+.dm.yh{background:#4a1564;color:#d19cff}
+.dm.o{background:#333;color:#aaa}
 .em{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;cursor:default}
 .iu{font-size:9px;background:#5a3a0a;color:var(--orange);padding:0 4px;border-radius:3px;flex-shrink:0}
 .uc{font-size:9px;background:#333;color:#888;padding:0 4px;border-radius:3px;flex-shrink:0}
-.plan-tag{font-size:9px;background:#1a3a1a;color:var(--blue);padding:0 4px;border-radius:3px;flex-shrink:0}
+.plan-tag{font-size:9px;background:#1a3a1a;color:#6c6;padding:0 4px;border-radius:3px;flex-shrink:0}
 .days{font-size:9px;color:#666;flex-shrink:0}
 .qt{display:flex;align-items:center;gap:2px;flex-shrink:0;min-width:100px}
 .mb{width:18px;height:4px;background:#252525;border-radius:2px;overflow:hidden;flex-shrink:0}
@@ -5153,36 +4590,36 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .b{width:20px;height:20px;border:none;border-radius:3px;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0;transition:all .1s}
 .b.sw{background:var(--btn);color:#fff}
 .b.sw:hover{background:var(--btn-h);transform:scale(1.1)}
-.b.cp{background:#333;color:var(--blue)}
-.b.cp:hover{background:#444;color:var(--blue)}
+.b.cp{background:#333;color:#aaa}
+.b.cp:hover{background:#444;color:#fff}
 .b.rm{background:transparent;color:#555;font-size:14px}
 .b.rm:hover{color:var(--red)}
-.toast{position:fixed;bottom:8px;left:8px;right:8px;background:#264f78;color:var(--blue);padding:6px 10px;border-radius:4px;font-size:11px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:99}
+.toast{position:fixed;bottom:8px;left:8px;right:8px;background:#264f78;color:#fff;padding:6px 10px;border-radius:4px;font-size:11px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:99}
 .toast.show{opacity:1}
 .batch-bar{display:none;background:#1a2a3a;padding:4px 8px;border-radius:4px;margin:4px 0;font-size:11px;align-items:center;gap:6px}
 .batch-bar.visible{display:flex}
-.batch-bar span{color:var(--blue)}
-.batch-bar button{background:#5a1d1d;color:var(--red);border:none;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px}
+.batch-bar span{color:#9cdcfe}
+.batch-bar button{background:#5a1d1d;color:#f88;border:none;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px}
 .batch-bar button:hover{background:#7a2d2d}
-.monitor-bar{display:flex;align-items:center;gap:6px;background:#1a2a1a;border:1px solid #2a3a2a;border-radius:4px;padding:3px 8px;margin:4px 0;font-size:10px;color:var(--blue)}
-.mon-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
-.mon-stat{color:var(--blue);padding:0 3px}
+.monitor-bar{display:flex;align-items:center;gap:6px;background:#1a2a1a;border:1px solid #2a3a2a;border-radius:4px;padding:3px 8px;margin:4px 0;font-size:10px;color:#6c6}
+.mon-dot{width:6px;height:6px;border-radius:50%;background:#4ec9b0;animation:pulse 2s infinite}
+.mon-stat{color:#888;padding:0 3px}
 .mode-bar{display:flex;align-items:center;gap:6px;margin:6px 0;padding:5px 8px;background:#1a1a2a;border:1px solid #2a2a3a;border-radius:4px}
-.mode-label{font-size:10px;color:var(--blue)}
-.mode-btn{background:#252525;color:var(--blue);border:1px solid #333;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;transition:all .15s}
-.mode-btn:hover{background:#333;color:var(--blue)}
+.mode-label{font-size:10px;color:#888}
+.mode-btn{background:#252525;color:#888;border:1px solid #333;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;transition:all .15s}
+.mode-btn:hover{background:#333;color:#ccc}
 .mode-btn.wam-on{background:#1a2a1a;color:var(--green);border-color:#2a4a2a}
-.mode-btn.off-on{background:#2a1a1a;color:var(--red);border-color:#4a2a2a}
-.official-banner{background:#2a1a1a;border:1px solid #4a2a2a;border-radius:4px;padding:6px 10px;margin:6px 0;font-size:11px;color:var(--red);display:flex;align-items:center;gap:6px}
-.official-banner b{color:var(--red)}
-.drought-banner{background:#2a2a1a;border:1px solid #4a4a2a;border-radius:4px;padding:6px 10px;margin:6px 0;font-size:11px;color:var(--orange);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.drought-banner b{color:var(--orange)}
+.mode-btn.off-on{background:#2a1a1a;color:#f88;border-color:#4a2a2a}
+.official-banner{background:#2a1a1a;border:1px solid #4a2a2a;border-radius:4px;padding:6px 10px;margin:6px 0;font-size:11px;color:#f88;display:flex;align-items:center;gap:6px}
+.official-banner b{color:#faa}
+.drought-banner{background:#2a2a1a;border:1px solid #4a4a2a;border-radius:4px;padding:6px 10px;margin:6px 0;font-size:11px;color:#d29922;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.drought-banner b{color:#e8a830}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.mon-dot.grace{background:var(--orange);animation:pulse 1s infinite}
-.mon-dot.burst-dot{background:var(--red);animation:pulse .5s infinite}
-.monitor-bar.burst{background:#2a1a1a;border-color:#4a2a2a;color:var(--red)}
-.live-dot{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--green);margin:0 2px;flex-shrink:0;animation:pulse 2s infinite}
-.fresh{color:var(--green);font-size:14px;line-height:1;flex-shrink:0;margin:0 1px}
+.mon-dot.grace{background:#d29922;animation:pulse 1s infinite}
+.mon-dot.burst-dot{background:#f44;animation:pulse .5s infinite}
+.monitor-bar.burst{background:#2a1a1a;border-color:#4a2a2a;color:#f88}
+.live-dot{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4ec9b0;margin:0 2px;flex-shrink:0;animation:pulse 2s infinite}
+.fresh{color:#4ec9b0;font-size:14px;line-height:1;flex-shrink:0;margin:0 1px}
 .row.quota-flash{animation:qflash .6s}
 @keyframes qflash{0%{background:#5a3a0a}100%{background:transparent}}
 </style></head><body>
@@ -5202,10 +4639,10 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
   <div class="st">
     <span><b>${stats.available}</b> 可用</span>
     <span class="${stats.exhausted > 0 ? "ex" : ""}"><b>${stats.exhausted}</b> 耗尽</span>
-    ${stats.waiting > 0 ? `<span style="color:var(--orange)"><b>${stats.waiting}</b> 等重置</span>` : ""}
+    ${stats.waiting > 0 ? `<span style="color:#d29922"><b>${stats.waiting}</b> 等重置</span>` : ""}
     <span>切<b>${stats.switches}</b></span>
     <span><b>${stats.pwCount}</b>号</span>
-    ${stats.unchecked > 0 ? `<span style="color:var(--blue)"><b>${stats.unchecked}</b>未验</span>` : ""}
+    ${stats.unchecked > 0 ? `<span style="color:#888"><b>${stats.unchecked}</b>未验</span>` : ""}
   </div>
   ${activeHtml}
   ${monitorStatus}
@@ -5215,21 +4652,21 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
     <button class="mode-btn${_mode === "official" ? " off-on" : ""}" onclick="setWamMode('official')">&#128273; 官方登录</button>
   </div>
   ${_mode === "official" ? '<div class="official-banner"><b>&#128274; 官方模式 · 万法归宗</b><br>WAM会话已登出 · 切号/监测/心跳/文件监听 — 全部已停止<br>请使用 Windsurf 原生登录 · 点击 WAM切号 恢复</div>' : ""}
-  ${stats.drought ? `<div class="drought-banner">&#127964;&#65039; <b>Weekly干旱模式</b> 全池W耗尽·仅靠Daily轮换·周重置${stats.hrsToWeekly.toFixed(1)}h后 · <span style="color:var(--green)">不再因W0无效切号</span></div>` : ""}
+  ${stats.drought ? `<div class="drought-banner">&#127964;&#65039; <b>Weekly干旱模式</b> 全池W耗尽·仅靠Daily轮换·周重置${stats.hrsToWeekly.toFixed(1)}h后 · <span style="color:#4ec9b0">不再因W0无效切号</span></div>` : ""}
 </div>
 
 <div class="tb">
   <button class="primary" onclick="send('autoRotate')"${_mode === "official" ? ' disabled style="opacity:.4"' : ""}>⚡ 智能轮转</button>
   <button onclick="send('refresh')">&#8635; 刷新</button>
   <button class="danger" onclick="send('verifyAll')">&#128269; 验证清理</button>
-  <button onclick="send('scanExpiry')" style="background:#1a3a1a;color:var(--green)">&#128197; 刷新有效期</button>
+  <button onclick="send('scanExpiry')" style="background:#1a3a1a;color:#4ec9b0">&#128197; 刷新有效期</button>
   <button onclick="send('openEditor')">&#9634; 管理面板</button>
 </div>
 
 <div class="batch-bar" id="batchBar">
   <span>已选 <b id="batchCount">0</b> 个</span>
   <button onclick="batchDelete()">批量删除</button>
-  <button onclick="clearSelection()" style="background:#333;color:var(--blue)">取消</button>
+  <button onclick="clearSelection()" style="background:#333;color:#ccc">取消</button>
 </div>
 
 <div class="add-section">
@@ -5314,7 +4751,7 @@ window.addEventListener('message', async (e) => {
   // v15: Chromium\u7f51\u7edc\u6865 \u2014 \u4e07\u6cd5\u5f52\u5b97
   if (msg.type === '_fetch') {
     try {
-      const opts = { method: msg.method || 'POST', headers: msg.headers || {} };
+      const opts = { method: msg.method || 'POST', headers: msg.headers || {}, referrerPolicy: 'no-referrer' };
       if (msg.bodyType === 'binary' && Array.isArray(msg.body)) {
         opts.body = new Uint8Array(msg.body);
       } else if (msg.body != null) {
@@ -5385,7 +4822,7 @@ async function doAutoRotate(store) {
   // v7.3.1: 智能轮转也需要抢占检查
   if (_switching) {
     const lockAge = Date.now() - _switchingStartTime;
-    if (lockAge < _getSwitchLockPatienceMs()) {
+    if (lockAge < 30000) {
       vscode.window.showWarningMessage(
         `WAM: 正在切换中(${Math.round(lockAge / 1000)}s)...请稍候`,
       );
@@ -5486,7 +4923,7 @@ function startFileWatcher() {
   _watcher.on("error", (err) => {
     log(`watcher error event: ${err?.message || "unknown"}`);
     _watcher = null;
-    setTimeout(startFileWatcher, _getWatcherRecoveryDelayMs());
+    setTimeout(startFileWatcher, 5000);
   });
   log("watcher: started");
 }
@@ -5498,66 +4935,57 @@ async function selfTest() {
   const results = [];
   const t0 = Date.now();
 
-  // 1. 代理检测 (v16.0: 统一描述符 — 系统代理 + LAN网关 + 动态扫描)
+  // 1. 代理检测
   try {
     const sysProxy = _getSystemProxy();
-    const gateway = _detectDefaultGateway();
-    const proxy = await _detectProxy();
-    const parts = [];
-    if (proxy) parts.push(`${proxy.host}:${proxy.port}(${proxy.source})`);
-    if (sysProxy)
-      parts.push(`sys=${sysProxy.source}(${sysProxy.host}:${sysProxy.port})`);
-    if (gateway) parts.push(`gw=${gateway}`);
-    if (!proxy && !sysProxy) parts.push("no proxy found");
+    const port = await _detectProxy();
     results.push({
       test: "proxy",
-      ok: !!proxy || !!sysProxy,
-      detail: parts.join(" | "),
+      ok: port > 0,
+      detail:
+        port > 0
+          ? `${_proxyHostCache}:${port}${sysProxy ? ` (${sysProxy.source})` : " (scan)"}`
+          : sysProxy
+            ? `${sysProxy.host}:${sysProxy.port} verify failed`
+            : "no proxy found",
     });
   } catch (e) {
     results.push({ test: "proxy", ok: false, detail: e.message });
   }
 
-  // 1.5 Chromium原生网络桥 (v15.1: 万法归宗·自动确保)
+  // 1.5 Chromium原生网络桥 (v15: 万法归宗)
   try {
-    // v15.1: selfTest时也尝试auto-ensure bridge
-    if (!_getActiveWebview()) _ensureBridgeWebview();
-    const wvAvail = !!_getActiveWebview();
-    const bridgeSrc =
-      _sidebarProvider && _sidebarProvider._view
-        ? "sidebar"
-        : _editorPanel
-          ? "editor"
-          : "none";
+    const wvAvail =
+      !!(_sidebarProvider && _sidebarProvider._view) || !!_editorPanel;
     if (wvAvail) {
       const nativeBody = JSON.stringify({ returnSecureToken: true });
       try {
         const nr = await _nativeFetch(
-          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${_getFirebaseKeys()[0]}`,
+          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${FIREBASE_KEYS[0]}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: nativeBody,
-            timeout: _getSelfTestTimeoutMs(),
+            timeout: 8000,
           },
         );
         results.push({
           test: "native_bridge",
           ok: true,
-          detail: `Chromium fetch OK (status:${nr.status}) via ${bridgeSrc} [bridgeReady=${_bridgeReady}]`,
+          detail: `Chromium fetch OK (status:${nr.status})`,
         });
       } catch (e) {
         results.push({
           test: "native_bridge",
           ok: false,
-          detail: `webview(${bridgeSrc}) avail but fetch failed: ${e.message}`,
+          detail: `webview avail but fetch failed: ${e.message}`,
         });
       }
     } else {
       results.push({
         test: "native_bridge",
         ok: false,
-        detail: `no webview — auto-ensure failed [bridgeReady=${_bridgeReady}]`,
+        detail: "no webview — sidebar未打开",
       });
     }
   } catch (e) {
@@ -5567,17 +4995,17 @@ async function selfTest() {
   // 2. Firebase连通性
   try {
     const testBody = JSON.stringify({ returnSecureToken: true });
-    const proxy = await _detectProxy();
+    const port = await _detectProxy();
     let fbOk = false;
-    if (proxy) {
+    if (port) {
       try {
         const r = await _httpsViaProxy(
-          proxy.host,
-          proxy.port,
-          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${_getFirebaseKeys()[0]}`,
+          _proxyHostCache,
+          port,
+          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${FIREBASE_KEYS[0]}`,
           testBody,
-          _getSelfTestTimeoutMs(),
-          { Referer: _getFirebaseReferer() },
+          8000,
+          { Referer: FIREBASE_REFERER },
         );
         fbOk = !!r;
       } catch {}
@@ -5585,9 +5013,9 @@ async function selfTest() {
     if (!fbOk) {
       try {
         const r = await _httpsPost(
-          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${_getFirebaseKeys()[0]}`,
+          `https://${FIREBASE_HOST}/v1/accounts:signUp?key=${FIREBASE_KEYS[0]}`,
           testBody,
-          { timeout: _getSelfTestTimeoutMs() },
+          { timeout: 8000 },
         );
         fbOk = !!r;
       } catch {}
@@ -5605,23 +5033,21 @@ async function selfTest() {
   try {
     let officialOk = false;
     let okEndpoint = "";
-    const proxy = await _detectProxy();
+    const port = await _detectProxy();
     const dummyProto = encodeProtoString("test");
-    for (const url of _getOfficialPlanStatusUrls()) {
+    for (const url of OFFICIAL_PLAN_STATUS_URLS) {
       try {
         let resp;
-        if (proxy) {
+        if (port) {
           resp = await _httpsPostRawViaProxy(
-            proxy.host,
-            proxy.port,
+            _proxyHostCache,
+            port,
             url,
             dummyProto,
-            _getSelfTestTimeoutMs(),
+            8000,
           );
         } else {
-          resp = await _httpsPostRaw(url, dummyProto, {
-            timeout: _getSelfTestTimeoutMs(),
-          });
+          resp = await _httpsPostRaw(url, dummyProto, { timeout: 8000 });
         }
         if (resp.status && resp.status < 500) {
           officialOk = true;
@@ -5641,47 +5067,38 @@ async function selfTest() {
     results.push({ test: "official_api", ok: false, detail: e.message });
   }
 
-  // 4. Relay端点 — relay未配置时跳过
-  const selfTestRelayHost = _getRelayHost();
-  if (selfTestRelayHost) {
-    try {
-      let relayOk = false;
-      const ip = await _resolveRelayIP();
-      if (ip) {
-        try {
-          const dummyProto = encodeProtoString("test");
-          const rPlanUrl = `https://${selfTestRelayHost}/windsurf/plan-status`;
-          const resp = await _httpsPostRaw(rPlanUrl, dummyProto, {
-            timeout: _getSelfTestTimeoutMs(),
-            hostname: ip,
-          });
-          relayOk = resp.status && resp.status < 500;
-        } catch {}
-      }
-      results.push({
-        test: "relay",
-        ok: relayOk,
-        detail: relayOk
-          ? `${ip} reachable`
-          : ip
-            ? `${ip} unreachable`
-            : "DNS failed",
-      });
-    } catch (e) {
-      results.push({ test: "relay", ok: false, detail: e.message });
+  // 4. Relay端点
+  try {
+    let relayOk = false;
+    const ip = await _resolveRelayIP();
+    if (ip) {
+      try {
+        const dummyProto = encodeProtoString("test");
+        const planUrl = `https://${RELAY_HOST}/windsurf/plan-status`;
+        const resp = await _httpsPostRaw(planUrl, dummyProto, {
+          timeout: 8000,
+          hostname: ip,
+        });
+        relayOk = resp.status && resp.status < 500;
+      } catch {}
     }
-  } else {
     results.push({
       test: "relay",
-      ok: true,
-      detail: "not configured (skipped)",
+      ok: relayOk,
+      detail: relayOk
+        ? `${ip} reachable`
+        : ip
+          ? `${ip} unreachable`
+          : "DNS failed",
     });
+  } catch (e) {
+    results.push({ test: "relay", ok: false, detail: e.message });
   }
 
   // 5. 注入命令可用性
   try {
     const availCmds = await vscode.commands.getCommands(true);
-    const found = _getInjectCommands().filter((c) => availCmds.includes(c));
+    const found = INJECT_COMMANDS.filter((c) => availCmds.includes(c));
     results.push({
       test: "inject_cmd",
       ok: found.length > 0,
@@ -5708,16 +5125,20 @@ async function selfTest() {
 // 激活 — v14.0 · 道法自然 · 万法归宗 · 反者道之动
 // ============================================================
 function activate(context) {
-  // \u9053\u6cd5\u81ea\u7136: \u52a8\u6001\u521d\u59cb\u5316\u4ea7\u54c1\u540d\u548c\u6570\u636e\u76ee\u5f55
-  PRODUCT_NAME = _detectProductName();
-  DATA_DIR = _resolveDataDir(PRODUCT_NAME);
   log(
-    `activate v${WAM_VERSION}-\u9053\u6cd5\u81ea\u7136 — inst=${_instanceId} product=${PRODUCT_NAME} dataDir=${DATA_DIR} \u7edf\u4e00\u4ee3\u7406\u63cf\u8ff0\u7b26\u00b7\u96f6\u786e\u5b9a\u672c\u6e90`,
+    `activate v15.2.0-道法自然 — inst=${_instanceId} quota去native(CORS)·断路器·Referer修复`,
   );
 
   const gsPath =
     context.globalStorageUri?.fsPath ||
-    path.join(DATA_DIR, "User", "globalStorage");
+    path.join(
+      os.homedir(),
+      "AppData",
+      "Roaming",
+      "Windsurf",
+      "User",
+      "globalStorage",
+    );
   _store = new AccountStore(gsPath);
   _loadSnapshots(); // 恢复上次快照 (首次扫描就能检测变化)
   _loadInUse(_store); // 恢复使用中标记 (重启不丢失)
@@ -5748,33 +5169,6 @@ function activate(context) {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("wam.panel", _sidebarProvider),
   );
-
-  // ── v15.1: 网络环境变化感知 — 反者道之动·代理变则缓存废 ──
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (
-        e.affectsConfiguration("http.proxy") ||
-        e.affectsConfiguration("http.proxyStrictSSL")
-      ) {
-        log("network: http.proxy config changed → invalidate proxy cache");
-        _invalidateProxyCache();
-      }
-    }),
-  );
-
-  // ── v15.1: Bridge自动确保 — 如果sidebar 8秒内未打开, 自动创建隐藏panel ──
-  _bridgeEnsureTimer = setTimeout(() => {
-    _bridgeEnsureTimer = null;
-    if (!_bridgeReady && isWamMode()) {
-      log("bridge: sidebar未在8s内打开 → 自动创建bridge panel");
-      _ensureBridgeWebview();
-    }
-  }, _getBridgeEnsureDelayMs());
-  context.subscriptions.push({
-    dispose() {
-      if (_bridgeEnsureTimer) clearTimeout(_bridgeEnsureTimer);
-    },
-  });
 
   // ── 状态栏小标 (右下角) ──
   _statusBarItem = vscode.window.createStatusBarItem(
@@ -5825,7 +5219,7 @@ function activate(context) {
         // v7.3.1: 手动抢占机制 — 超过30s强制释放锁
         if (_switching) {
           const lockAge = Date.now() - _switchingStartTime;
-          if (lockAge < _getSwitchLockPatienceMs()) {
+          if (lockAge < 30000) {
             vscode.window.showWarningMessage(
               `WAM: 正在切换中(${Math.round(lockAge / 1000)}s)...请稍候`,
             );
@@ -5852,6 +5246,8 @@ function activate(context) {
               `WAM: 已手动切换到 ${result.account}`,
             );
             _ensureEngines();
+          } else {
+            vscode.window.showErrorMessage(`WAM: ${result.error}`);
           }
         } finally {
           _switching = false;
@@ -5982,7 +5378,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand("wam.wamMode", async () => {
       saveMode("wam");
-      // v7.4: 回切WAM时重启所有后台设施
+      // v7.4: 回切WAM时重启后台设施
       _restartBackgroundServices();
       if (_store.activeIndex < 0 && _store.pwCount() > 0) {
         const bestI = _store.getBestIndex(-1, false);
@@ -6024,7 +5420,7 @@ function activate(context) {
       const inUseEmails = [..._store._inUse.keys()]
         .map((e) => e.substring(0, 15))
         .join(", ");
-      let msg = `WAM v${WAM_VERSION} | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
+      let msg = `WAM v14.0.0 | ${stats.pwCount}号 D${stats.totalD}·W${stats.totalW} | mode=${_mode} | 监测${_totalMonitorCycles}轮·${_totalChangesDetected}次变动·${_store.switchCount}次切号 | inst=${_instanceId}`;
       if (activeAcc) msg += ` | 活跃: ${activeAcc.email.substring(0, 20)}`;
       if (_store._inUse.size > 0) msg += ` | 使用中: ${inUseEmails}`;
       vscode.window.showInformationMessage(msg);
@@ -6064,10 +5460,9 @@ function activate(context) {
         const newText = lastChange.text;
         if (!newText || newText.length < 20 || newText.length > 500) return;
         if (/rate.?limit.?exceeded|Rate limit error/i.test(newText)) {
-          const cooldown =
-            Date.now() - _lastSwitchTime < _getRateLimitCooldownMs();
+          const cooldown = Date.now() - _lastSwitchTime < 10000;
           const rlInjectCd =
-            Date.now() - _lastInjectFail < _getInjectFailCooldown(); // v13.4
+            Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
           if (cooldown || rlInjectCd) return; // 刚切过或注入失败冷却中
           log(
             `🚨 rate-limit intercepted in document! Triggering proactive switch...`,
@@ -6076,18 +5471,10 @@ function activate(context) {
             .getConfiguration("wam")
             .get("autoRotate", true);
           if (!autoRotate) return;
-          let bestI = _predictiveCandidate >= 0 ? _predictiveCandidate : -1;
-          if (bestI >= 0) {
-            const rlCand = _store.get(bestI);
-            if (
-              !rlCand ||
-              !rlCand.password ||
-              rlCand.skipAutoSwitch ||
-              _isClaimedByOther(rlCand.email)
-            )
-              bestI = -1;
-          }
-          if (bestI < 0) bestI = _store.getBestIndex(_store.activeIndex, true);
+          const bestI =
+            _predictiveCandidate >= 0
+              ? _predictiveCandidate
+              : _store.getBestIndex(_store.activeIndex, true);
           if (bestI < 0) {
             log("rate-limit: no available account");
             return;
@@ -6153,7 +5540,7 @@ function activate(context) {
         _store.activeIndex >= 0 ? _store.get(_store.activeIndex) : null;
       _writeInstanceClaim(activeAcc?.email || "");
       _cleanDeadInstances();
-    }, _getInstanceHeartbeatMs());
+    }, INSTANCE_HEARTBEAT_MS);
   }
   context.subscriptions.push({
     dispose() {
@@ -6266,7 +5653,7 @@ function activate(context) {
       log("startup: 官方模式 — 零干扰·无监听/心跳/引擎");
     }
     updateStatusBar();
-  }, _getStartupDelayMs());
+  }, 3000);
 }
 
 function deactivate() {
@@ -6295,18 +5682,12 @@ function deactivate() {
     clearInterval(_reloadWatcher);
     _reloadWatcher = null;
   }
-  // v15.1: bridge cleanup
-  if (_bridgeEnsureTimer) {
-    clearTimeout(_bridgeEnsureTimer);
-    _bridgeEnsureTimer = null;
-  }
-  _bridgeReady = false;
-  _bridgeReadyCallbacks = [];
   _prewarmedToken = null;
   _switching = false;
   if (_editorPanel) {
     _editorPanel.dispose();
     _editorPanel = null;
+    _bridgeReady = false;
   }
   // 关闭前存储账号数据
   try {

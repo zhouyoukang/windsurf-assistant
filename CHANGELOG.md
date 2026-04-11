@@ -1,5 +1,45 @@
 # Changelog
 
+## v17.3.0 — 反者道之动·v10.2额度根因修复 (2026-04-11)
+
+### 根因: Proto3零值省略导致Weekly镜像反转
+
+Proto field 14/15 = `remainingPercent`（逆向实证）。Proto3零值省略 → field 15 absent = weekly剩余0% = 耗尽。旧版v9.3的镜像逻辑在 `dReset===wReset` 时将daily镜像到weekly → **W0被误读为W100 → 永不切号 → Quota Exhausted**。
+
+### 核心修复 (`wam-bundle/extension.js`)
+
+| 函数 | 修改 |
+|------|------|
+| `_extractQuotaFields` | 删除全部5分支镜像逻辑 → 2分支, absent field 15 = 0 |
+| `getHealth` | weeklyUnknown兜底从 `daily镜像` → `0(耗尽)`, 绝不镜像 |
+| `_updateAccountUsage` | weekly始终0-100, 兜底逻辑仅防极端情况 |
+| monitor/scan snapWeekly | 注释同步v10.2 |
+
+### 数据流验证
+
+```
+API → proto field14=100, field15=absent(proto3零值省略)
+  → _extractQuotaFields: daily=100, weekly=0 ✓ (旧版: weekly=100 ✗)
+  → getHealth: D100 W0 ✓
+  → 官方: Daily usage=0%, Weekly usage=100% → 对应关系正确
+```
+
+### 实测证据
+
+```
+D100 W34, D100 W37, D100 W100 — D/W完全独立, 非镜像 ✓
+scan: batch[70+10] 8ok 6changed — 正常运转 ✓
+Errors: 0 ✓
+```
+
+### 设计原则
+
+- **不做假设性镜像** — 若API真的D/W统一, field15会显式=field14
+- **无迁移逻辑** — W=D=100是合法新账号, API scan自然刷新
+- **防御性保留** — `weeklyUnknown` flag + `result.weekly >= 0` guard仍在
+
+---
+
 ## v17.1.0 — 去芜留菁·47常量零残留 (2026-04-11)
 
 ### 核心: 剩余19个硬编码常量+魔法数字全部getter化
