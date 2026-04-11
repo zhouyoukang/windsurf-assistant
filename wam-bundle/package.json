@@ -1,8 +1,8 @@
 {
   "name": "wam",
   "displayName": "WAM · 无感切号",
-  "description": "WAM v17.0 — 道法自然·零硬编码·动态配置·跨平台自适应·28常量getter化·91项验证全通过",
-  "version": "17.0.0",
+  "description": "WAM v17.1 — 道法自然·零硬编码·动态配置·跨平台自适应·44常量getter化·零残留",
+  "version": "17.1.0",
   "publisher": "local",
   "license": "MIT",
   "engines": { "vscode": "^1.85.0" },
@@ -125,6 +125,151 @@
           "type": "number",
           "default": 25,
           "description": "额度低于此百分比时预热候选账号Token"
+        },
+        "wam.injectFailCooldownMs": {
+          "type": "number",
+          "default": 3000,
+          "description": "注入失败后冷却时间 (毫秒)"
+        },
+        "wam.purgeIntervalMs": {
+          "type": "number",
+          "default": 21600000,
+          "description": "自动清理间隔 (毫秒, 默认6小时)"
+        },
+        "wam.proxyCacheTtlMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "代理缓存TTL (毫秒, 默认5分钟)"
+        },
+        "wam.proxyFailTtlMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "代理失败缓存TTL (毫秒, 默认30秒)"
+        },
+        "wam.claimsCacheTtlMs": {
+          "type": "number",
+          "default": 5000,
+          "description": "实例claims缓存TTL (毫秒)"
+        },
+        "wam.quotaMinIntervalMs": {
+          "type": "number",
+          "default": 10000,
+          "description": "额度查询最小间隔 (毫秒)"
+        },
+        "wam.quota429BackoffMs": {
+          "type": "number",
+          "default": 60000,
+          "description": "429错误退避时间 (毫秒)"
+        },
+        "wam.relayIpTtlMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Relay IP缓存TTL (毫秒, 默认10分钟)"
+        },
+        "wam.tokenPool.burstMs": {
+          "type": "number",
+          "default": 5000,
+          "description": "Token池冲刺间隔 (毫秒)"
+        },
+        "wam.tokenPool.cruiseMs": {
+          "type": "number",
+          "default": 45000,
+          "description": "Token池巡航间隔 (毫秒)"
+        },
+        "wam.tokenPool.burstDurationMs": {
+          "type": "number",
+          "default": 180000,
+          "description": "Token池冲刺持续时间 (毫秒, 默认3分钟)"
+        },
+        "wam.tokenPool.marginMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Token提前续期边距 (毫秒, 默认10分钟)"
+        },
+        "wam.tokenPool.parallelBurst": {
+          "type": "number",
+          "default": 3,
+          "description": "冲刺期并行度"
+        },
+        "wam.tokenPool.parallelCruise": {
+          "type": "number",
+          "default": 1,
+          "description": "巡航期并行度"
+        },
+        "wam.tokenPool.tempBanThreshold": {
+          "type": "number",
+          "default": 3,
+          "description": "连续失败N次后临时拉黑"
+        },
+        "wam.tokenPool.tempBanDurationMs": {
+          "type": "number",
+          "default": 900000,
+          "description": "临时拉黑持续时间 (毫秒, 默认15分钟)"
+        },
+        "wam.scanBatchSize": {
+          "type": "number",
+          "default": 10,
+          "description": "后台扫描每批次账号数"
+        },
+        "wam.changeThreshold": {
+          "type": "number",
+          "default": 0.01,
+          "description": "额度变动检测阈值 (百分比)"
+        },
+        "wam.inUseCooldownMs": {
+          "type": "number",
+          "default": 120000,
+          "description": "账号使用标记冷却时间 (毫秒, 默认2分钟)"
+        },
+        "wam.burstIntervalMs": {
+          "type": "number",
+          "default": 1500,
+          "description": "突发模式轮询间隔 (毫秒)"
+        },
+        "wam.burstDurationMs": {
+          "type": "number",
+          "default": 60000,
+          "description": "突发模式持续时间 (毫秒, 默认1分钟)"
+        },
+        "wam.dailyResetHourUtc": {
+          "type": "number",
+          "default": 8,
+          "description": "每日配额重置时间 (UTC小时)"
+        },
+        "wam.weeklyResetDay": {
+          "type": "number",
+          "default": 0,
+          "description": "每周配额重置星期几 (0=周日)"
+        },
+        "wam.waitResetHours": {
+          "type": "number",
+          "default": 3,
+          "description": "重置前提前等待小时数"
+        },
+        "wam.instanceHeartbeatMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "实例心跳间隔 (毫秒, 默认30秒)"
+        },
+        "wam.instanceDeadMs": {
+          "type": "number",
+          "default": 60000,
+          "description": "实例死亡判定时间 (毫秒, 默认1分钟)"
+        },
+        "wam.switchCooldownMs": {
+          "type": "number",
+          "default": 15000,
+          "description": "切号后冷却时间 (毫秒, 默认15秒)"
+        },
+        "wam.rateLimitCooldownMs": {
+          "type": "number",
+          "default": 10000,
+          "description": "Rate-limit检测冷却时间 (毫秒, 默认10秒)"
+        },
+        "wam.droughtCacheTtlMs": {
+          "type": "number",
+          "default": 10000,
+          "description": "Weekly干旱检测缓存TTL (毫秒, 默认10秒)"
         }
       }
     }

@@ -1,8 +1,8 @@
 {
   "name": "windsurf-login-helper",
   "displayName": "WAM · Windsurf Account Manager",
-  "description": "WAM v17.0 — 道法自然·零硬编码·动态配置·跨平台自适应·所有Windsurf环境·所有代理环境·91项验证全通过",
-  "version": "17.0.0",
+  "description": "WAM v17.1 — 道法自然·零硬编码·动态配置·跨平台自适应·44常量getter化·零残留",
+  "version": "17.1.0",
   "license": "MIT",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
@@ -63,7 +63,23 @@
         "wam.scanIntervalMs": { "type": "number", "default": 45000, "description": "扫描间隔(ms)" },
         "wam.tokenCacheTtlMin": { "type": "number", "default": 50, "description": "Token缓存TTL(分)" },
         "wam.autoSwitchThreshold": { "type": "number", "default": 5, "description": "自动切号阈值(%)" },
-        "wam.predictiveThreshold": { "type": "number", "default": 25, "description": "预热阈值(%)" }
+        "wam.predictiveThreshold": { "type": "number", "default": 25, "description": "预热阈值(%)" },
+        "wam.injectFailCooldownMs": { "type": "number", "default": 3000, "description": "注入失败冷却(ms)" },
+        "wam.purgeIntervalMs": { "type": "number", "default": 21600000, "description": "自动清理间隔(ms)" },
+        "wam.proxyCacheTtlMs": { "type": "number", "default": 300000, "description": "代理缓存TTL(ms)" },
+        "wam.proxyFailTtlMs": { "type": "number", "default": 30000, "description": "代理失败缓存(ms)" },
+        "wam.claimsCacheTtlMs": { "type": "number", "default": 5000, "description": "claims缓存TTL(ms)" },
+        "wam.quotaMinIntervalMs": { "type": "number", "default": 10000, "description": "额度查询间隔(ms)" },
+        "wam.quota429BackoffMs": { "type": "number", "default": 60000, "description": "429退避(ms)" },
+        "wam.relayIpTtlMs": { "type": "number", "default": 600000, "description": "Relay IP缓存(ms)" },
+        "wam.tokenPool.burstMs": { "type": "number", "default": 5000, "description": "Pool冲刺间隔(ms)" },
+        "wam.tokenPool.cruiseMs": { "type": "number", "default": 45000, "description": "Pool巡航间隔(ms)" },
+        "wam.tokenPool.burstDurationMs": { "type": "number", "default": 180000, "description": "Pool冲刺时长(ms)" },
+        "wam.tokenPool.marginMs": { "type": "number", "default": 600000, "description": "Token续期边距(ms)" },
+        "wam.tokenPool.parallelBurst": { "type": "number", "default": 3, "description": "冲刺并行度" },
+        "wam.tokenPool.parallelCruise": { "type": "number", "default": 1, "description": "巡航并行度" },
+        "wam.tokenPool.tempBanThreshold": { "type": "number", "default": 3, "description": "拉黑阈值" },
+        "wam.tokenPool.tempBanDurationMs": { "type": "number", "default": 900000, "description": "拉黑时长(ms)" }
       }
     }
   }

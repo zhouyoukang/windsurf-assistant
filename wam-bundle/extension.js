@@ -1,15 +1,12 @@
-// WAM v16.0 — 万法归宗·从根本去除端口依赖: Chromium原生网络桥·统一代理描述符·零固定端口·零固定地址
+// WAM v17.1 — 道法自然·零硬编码·动态配置: 44个常量全部getter化·跨平台自适应·一切可覆盖
 // 载营魄抱一，能无离乎？专气致柔，能如婴儿乎？
 // 五感原则: 切号绝不调用windsurf.logout, 绝不重启extension host, 绝不写state.vscdb
 // v15.0: Webview fetch()走Chromium渲染进程 — 与Windsurf官方登录完全同一网络路径
 // v15.1: Bridge生命周期管理 — startup自动创建·sidebar retainContext·网络变化感知·proxy缓存联动
 // v15.2: 道可道非常道 — _httpsPost/_httpsPostRaw自动感知系统代理·LAN网关自动发现
-// v16.0: 万法归宗 — 从根本去除端口依赖·解构用户底层:
-//   - 消灭 PROXY_SCAN_HOST / PROXY_PORTS 硬编码常量
-//   - _detectProxy() 返回统一描述符 {host,port,source}|null (不再是端口号)
-//   - 消灭 _proxyPortCache/_proxyHostCache 双全局 → 单一 _proxyCache 描述符
-//   - 只要用户可访问Windsurf服务 → 必然可获取一切账号信息 (native bridge)
-//   - 只要用户开启魔法 → 必然可连接登录切号 (系统代理自适应)
+// v16.0: 万法归宗 — 统一代理描述符·消灭双全局状态
+// v17.0: 道法自然 — 28个硬编码常量getter化·_cfg()修复·跨平台自适应
+// v17.1: 去芜留菁 — 剩余16个常量(proxy/pool/quota/purge)全部getter化·44常量零残留
 // 锚定本源: Chromium原生桥 > 系统代理感知 > 直连 > 动态端口发现(末路兜底)
 const vscode = require("vscode");
 const crypto = require("crypto");
@@ -205,8 +202,8 @@ const INUSE_FILE = path.join(WAM_DIR, "inuse_marks.json");
 const RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 const RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
-const PURGE_INTERVAL_MS = 6 * 3600 * 1000; // 每6小时自动检查一次
-const WAM_VERSION = "17.0.0"; // 集中版本号 — 道法自然·一处定义
+// PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
+const WAM_VERSION = "17.1.0"; // 集中版本号 — 道法自然·一处定义
 
 let _store = null;
 let _sidebarProvider = null;
@@ -276,8 +273,72 @@ function _getInstanceHeartbeatMs() {
 function _getInstanceDeadMs() {
   return _cfg("instanceDeadMs", 60000);
 }
-// 道法自然: 所有时序/阈值常量已由getter动态化, 不再使用const
-// 唯一保留: 实例锁文件路径(不可配置)
+// v17.1 去芜留菁: 所有行为常量均已getter化, 零残留
+// ── 注入/清理 时序 ──
+function _getInjectFailCooldown() {
+  return _cfg("injectFailCooldownMs", 3000);
+}
+function _getPurgeIntervalMs() {
+  return _cfg("purgeIntervalMs", 21600000);
+}
+// ── 代理缓存 TTL ──
+function _getProxyCacheTtl() {
+  return _cfg("proxyCacheTtlMs", 300000);
+}
+function _getProxyFailTtl() {
+  return _cfg("proxyFailTtlMs", 30000);
+}
+// ── 实例Claims缓存 ──
+function _getClaimsCacheTtl() {
+  return _cfg("claimsCacheTtlMs", 5000);
+}
+// ── 额度查询节流 ──
+function _getQuotaMinInterval() {
+  return _cfg("quotaMinIntervalMs", 10000);
+}
+function _getQuota429Backoff() {
+  return _cfg("quota429BackoffMs", 60000);
+}
+// ── Relay IP缓存 ──
+function _getRelayIpTtl() {
+  return _cfg("relayIpTtlMs", 600000);
+}
+// ── Token活水池 ──
+function _getTokenPoolBurstMs() {
+  return _cfg("tokenPool.burstMs", 5000);
+}
+function _getTokenPoolCruiseMs() {
+  return _cfg("tokenPool.cruiseMs", 45000);
+}
+function _getTokenPoolBurstDuration() {
+  return _cfg("tokenPool.burstDurationMs", 180000);
+}
+function _getTokenPoolMargin() {
+  return _cfg("tokenPool.marginMs", 600000);
+}
+function _getPoolParallelBurst() {
+  return _cfg("tokenPool.parallelBurst", 3);
+}
+function _getPoolParallelCruise() {
+  return _cfg("tokenPool.parallelCruise", 1);
+}
+function _getPoolTempBanThreshold() {
+  return _cfg("tokenPool.tempBanThreshold", 3);
+}
+function _getPoolTempBanDuration() {
+  return _cfg("tokenPool.tempBanDurationMs", 900000);
+}
+// ── 切号/限速冷却 ──
+function _getSwitchCooldownMs() {
+  return _cfg("switchCooldownMs", 15000);
+}
+function _getRateLimitCooldownMs() {
+  return _cfg("rateLimitCooldownMs", 10000);
+}
+function _getDroughtCacheTtlMs() {
+  return _cfg("droughtCacheTtlMs", 10000);
+}
+
 const INSTANCE_LOCK_FILE = path.join(WAM_DIR, "instance_claims.json");
 
 let _quotaSnapshots = new Map(); // email -> {daily, weekly, ts}
@@ -297,7 +358,6 @@ let _consecutiveChanges = 0; // 连续变动计数 (锚定强度)
 let _lastSwitchTime = 0; // 上次切号时戳
 let _lastInjectFail = 0; // v13.4: 上次注入失败时间戳
 let _consecutiveInjectFails = 0; // v14.2: 连续注入失败计数 → 触发_workingInjectCmd重置
-const INJECT_FAIL_COOLDOWN = 3000; // v14.3: 注入失败后3s冷却 (5s→3s, p3无条件重试已内含充分等待)
 let _lastSelfActivity = 0; // 上次本实例活动时间 (编辑器/终端/对话)
 let _instanceId = crypto.randomBytes(4).toString("hex"); // 本实例唯一ID
 let _heartbeatTimer = null;
@@ -464,7 +524,8 @@ function hoursUntilWeeklyReset() {
 // 干旱模式下: 不因W0触发切号，只看Daily，避免无效切号死循环
 function isWeeklyDrought() {
   const now = Date.now();
-  if (now - _droughtCache.ts < 10000) return _droughtCache.value;
+  if (now - _droughtCache.ts < _getDroughtCacheTtlMs())
+    return _droughtCache.value;
   if (!_store) {
     _droughtCache = { value: false, ts: now };
     return false;
@@ -1365,8 +1426,8 @@ class AccountStore {
       const streak = _poolFailStreak.get(ek);
       if (
         streak &&
-        streak.count >= POOL_TEMP_BAN_THRESHOLD &&
-        Date.now() - streak.lastFail < POOL_TEMP_BAN_DURATION
+        streak.count >= _getPoolTempBanThreshold() &&
+        Date.now() - streak.lastFail < _getPoolTempBanDuration()
       )
         continue;
       const h = this.getHealth(a);
@@ -1462,11 +1523,10 @@ function _readInstanceClaims() {
 // v14.3.1: claims缓存 — getBestIndex每个账号都调用_isClaimedByOther, 50号=50次readFileSync
 // 缓存5秒TTL, 将N次磁盘读降为1次
 let _claimsCache = { data: null, ts: 0 };
-const CLAIMS_CACHE_TTL = 5000;
 
 function _isClaimedByOther(email) {
   const now = Date.now();
-  if (!_claimsCache.data || now - _claimsCache.ts > CLAIMS_CACHE_TTL) {
+  if (!_claimsCache.data || now - _claimsCache.ts > _getClaimsCacheTtl()) {
     _claimsCache = { data: _readInstanceClaims(), ts: now };
   }
   const claims = _claimsCache.data;
@@ -1653,8 +1713,7 @@ function _httpsViaProxy(
 // 新版: 单一 _proxyCache 描述符 {host, port, source} | null → 自洽·无歧义
 let _proxyCache = null; // {host, port, source} | null — 验证通过的代理
 let _proxyCacheTs = 0;
-const PROXY_CACHE_TTL = 300000; // 5分钟 TTL
-const PROXY_FAIL_TTL = 30000; // 失败缓存30秒 (不反复锤死端口)
+// PROXY_CACHE_TTL / PROXY_FAIL_TTL → _getProxyCacheTtl() / _getProxyFailTtl() (v17.1 getter化)
 let _proxyDetectPromise = null; // v16.1: 共享Promise — 并发调用方等待同一次检测, 不再返回null
 const _PROXY_NOT_FOUND = Symbol("no_proxy"); // 区分"未检测"(null)和"检测过无结果"
 
@@ -1806,10 +1865,13 @@ function _detectProxy() {
   if (
     _proxyCache !== null &&
     _proxyCache !== _PROXY_NOT_FOUND &&
-    now - _proxyCacheTs < PROXY_CACHE_TTL
+    now - _proxyCacheTs < _getProxyCacheTtl()
   )
     return Promise.resolve(_proxyCache);
-  if (_proxyCache === _PROXY_NOT_FOUND && now - _proxyCacheTs < PROXY_FAIL_TTL)
+  if (
+    _proxyCache === _PROXY_NOT_FOUND &&
+    now - _proxyCacheTs < _getProxyFailTtl()
+  )
     return Promise.resolve(null);
   // v16.1: 共享Promise — 并发调用方等待同一次检测结果, 不再返回null丢失代理
   if (_proxyDetectPromise) return _proxyDetectPromise;
@@ -2583,17 +2645,16 @@ async function getCachedToken(email, password) {
 // ── 获取账号实时额度 (Firebase登录→Relay→PlanStatus) ──
 // v7.2: 速率限制 — 每账号最少间隔10秒，429后退避60秒
 const _quotaFetchCooldown = new Map(); // email → {nextAllowedTs}
-const QUOTA_MIN_INTERVAL = 10000; // 正常最小间隔10秒
-const QUOTA_429_BACKOFF = 60000; // 429后退避60秒
+// QUOTA_MIN_INTERVAL / QUOTA_429_BACKOFF → _getQuotaMinInterval() / _getQuota429Backoff() (v17.1 getter化)
 
 // v7.2: DoH解析relay真实IP (绕过Clash fake-ip DNS返回127.0.0.1的问题)
 let _relayIPCache = { ip: null, ts: 0 };
-const RELAY_IP_TTL = 600000; // IP缓存10分钟
+// RELAY_IP_TTL → _getRelayIpTtl() (v17.1 getter化)
 
 async function _resolveRelayIP() {
   const relayHost = _getRelayHost();
   if (!relayHost) return null; // relay未配置 → 跳过
-  if (_relayIPCache.ip && Date.now() - _relayIPCache.ts < RELAY_IP_TTL)
+  if (_relayIPCache.ip && Date.now() - _relayIPCache.ts < _getRelayIpTtl())
     return _relayIPCache.ip;
   // 方法1: DoH via proxy (dns.google)
   try {
@@ -2752,7 +2813,7 @@ async function fetchAccountQuota(email, password) {
       retryAfter: cd.nextAllowedTs - now,
     };
   }
-  _quotaFetchCooldown.set(key, { nextAllowedTs: now + QUOTA_MIN_INTERVAL });
+  _quotaFetchCooldown.set(key, { nextAllowedTs: now + _getQuotaMinInterval() });
 
   const loginResult = await getCachedToken(email, password);
   if (!loginResult.ok) {
@@ -2849,9 +2910,9 @@ async function fetchAccountQuota(email, password) {
       .then((resp) => {
         if (resp.status === 429) {
           _quotaFetchCooldown.set(key, {
-            nextAllowedTs: Date.now() + QUOTA_429_BACKOFF,
+            nextAllowedTs: Date.now() + _getQuota429Backoff(),
           });
-          log(`${chName}: 429 → backoff ${QUOTA_429_BACKOFF / 1000}s`);
+          log(`${chName}: 429 → backoff ${_getQuota429Backoff() / 1000}s`);
           throw new Error("429");
         }
         if (resp.status === 200 && resp.buf && resp.buf.length > 50) {
@@ -3590,18 +3651,11 @@ async function _prewarmPool(excludeIndex) {
 // 效果: 任意手动切号 → 必然cache HIT → 跳过3-4s Firebase登录 → inject-only切号
 // 节奏: N个账号/50分钟TTL → 每~(50*60/N)秒刷新1个 → CPU近零·网络极低
 // 道法自然: 水不等溃堤才流, Token不等切号才取 — 始终备好, 一触即发
-const TOKEN_POOL_BURST_MS = 5000; // 冲刺模式: 5秒/轮 (前3分钟快速填充)
-const TOKEN_POOL_CRUISE_MS = 45000; // 巡航模式: 45秒/轮 (v13.2: 加速恢复·水流不息)
-const TOKEN_POOL_BURST_DURATION = 180000; // 冲刺持续3分钟
-const TOKEN_POOL_MARGIN = 600000; // 提前10分钟续期
-const POOL_PARALLEL_BURST = 3; // v13: 冲刺并行度 (64÷3≈22 ticks×5s≈110s填满 vs 串行320s)
-const POOL_PARALLEL_CRUISE = 1; // v13: 巡航并行度 (低压维持)
+// TOKEN_POOL_* / POOL_* 常量 → getter化 (v17.1 去芜留菁)
 let _tokenPoolStartTs = 0; // 活水池启动时间
 let _tokenPoolTickCount = 0; // v13: pool自己的tick计数器
 const _tokenPoolBlacklist = new Set(); // 永久失败账号 (INVALID_PASSWORD等)
 const _poolFailStreak = new Map(); // email -> {count, lastFail} 连续网络失败计数
-const POOL_TEMP_BAN_THRESHOLD = 3; // 连续失败N次后临时拉黑
-const POOL_TEMP_BAN_DURATION = 900000; // 临时拉黑15分钟
 
 async function _tokenPoolTick() {
   if (!_store || _switching || !isWamMode()) return;
@@ -3622,14 +3676,14 @@ async function _tokenPoolTick() {
     const streak = _poolFailStreak.get(ek);
     if (
       streak &&
-      streak.count >= POOL_TEMP_BAN_THRESHOLD &&
-      Date.now() - streak.lastFail < POOL_TEMP_BAN_DURATION
+      streak.count >= _getPoolTempBanThreshold() &&
+      Date.now() - streak.lastFail < _getPoolTempBanDuration()
     )
       continue;
     if (
       streak &&
-      streak.count >= POOL_TEMP_BAN_THRESHOLD &&
-      Date.now() - streak.lastFail >= POOL_TEMP_BAN_DURATION
+      streak.count >= _getPoolTempBanThreshold() &&
+      Date.now() - streak.lastFail >= _getPoolTempBanDuration()
     )
       _poolFailStreak.delete(ek); // 解禁
     const cached = _tokenCache.get(ek);
@@ -3637,7 +3691,7 @@ async function _tokenPoolTick() {
     let urgency = 0;
     if (!cached || cached.expiresAt <= Date.now()) {
       urgency = 3; // 无缓存或已过期: 最紧急
-    } else if (cached.expiresAt < Date.now() + TOKEN_POOL_MARGIN) {
+    } else if (cached.expiresAt < Date.now() + _getTokenPoolMargin()) {
       urgency = 2; // 即将过期: 紧急
     } else if (cached.expiresAt < Date.now() + _getTokenCacheTtl() * 0.6) {
       urgency = 1; // 已过半: 低优先
@@ -3650,7 +3704,7 @@ async function _tokenPoolTick() {
   _tokenPoolTickCount++;
   // v13: pool自己的周期报告 (每10 ticks或填满时)
   const isBurstPhase =
-    Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
+    Date.now() - _tokenPoolStartTs < _getTokenPoolBurstDuration();
   if (
     _tokenPoolTickCount % 10 === 0 ||
     _tokenPoolTickCount <= 3 ||
@@ -3667,8 +3721,8 @@ async function _tokenPoolTick() {
   candidates.sort((a, b) => b.urgency - a.urgency || a.exp - b.exp);
 
   // v13: 冲刺期多路并发, 巡航期单路 — 上善若水, 水善利万物而不争
-  const isBurst = Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
-  const parallel = isBurst ? POOL_PARALLEL_BURST : POOL_PARALLEL_CRUISE;
+  const isBurst = Date.now() - _tokenPoolStartTs < _getTokenPoolBurstDuration();
+  const parallel = isBurst ? _getPoolParallelBurst() : _getPoolParallelCruise();
   const batch = candidates.slice(0, parallel);
 
   await Promise.allSettled(
@@ -3705,9 +3759,9 @@ async function _tokenPoolTick() {
             fs0.count++;
             fs0.lastFail = Date.now();
             _poolFailStreak.set(ek, fs0);
-            if (fs0.count === POOL_TEMP_BAN_THRESHOLD) {
+            if (fs0.count === _getPoolTempBanThreshold()) {
               log(
-                `🔥 pool: temp-ban ${acc.email.substring(0, 20)} (×${fs0.count} consecutive fails, ${POOL_TEMP_BAN_DURATION / 60000}min)`,
+                `🔥 pool: temp-ban ${acc.email.substring(0, 20)} (×${fs0.count} consecutive fails, ${_getPoolTempBanDuration() / 60000}min)`,
               );
             } else {
               log(
@@ -3743,7 +3797,7 @@ function _loadTokenCache() {
     if (loaded > 0) {
       log(`🔥 pool: loaded ${loaded} tokens from disk (survive restart)`);
       // 有持久缓存 → 跳过冲刺, 直接巡航
-      _tokenPoolStartTs = Date.now() - TOKEN_POOL_BURST_DURATION;
+      _tokenPoolStartTs = Date.now() - _getTokenPoolBurstDuration();
     }
   } catch {}
 }
@@ -3765,8 +3819,9 @@ function _startTokenPool() {
   _tokenPoolStartTs = _tokenPoolStartTs || Date.now();
   // v13: 冲刺模式前3分钟每5s并行填充N个, 快速填满缓存
   const scheduleNext = () => {
-    const isBurst = Date.now() - _tokenPoolStartTs < TOKEN_POOL_BURST_DURATION;
-    const interval = isBurst ? TOKEN_POOL_BURST_MS : TOKEN_POOL_CRUISE_MS;
+    const isBurst =
+      Date.now() - _tokenPoolStartTs < _getTokenPoolBurstDuration();
+    const interval = isBurst ? _getTokenPoolBurstMs() : _getTokenPoolCruiseMs();
     _tokenPoolTimer = setTimeout(async () => {
       await _tokenPoolTick();
       if (_tokenPoolTimer) scheduleNext();
@@ -3776,7 +3831,7 @@ function _startTokenPool() {
   // 首次立即触发
   setTimeout(() => _tokenPoolTick(), 2000);
   log(
-    `engine: token pool started (burst ${TOKEN_POOL_BURST_MS / 1000}s×${POOL_PARALLEL_BURST}并发×${TOKEN_POOL_BURST_DURATION / 60000}min → cruise ${TOKEN_POOL_CRUISE_MS / 1000}s) [v13.2]`,
+    `engine: token pool started (burst ${_getTokenPoolBurstMs() / 1000}s×${_getPoolParallelBurst()}并发×${_getTokenPoolBurstDuration() / 60000}min → cruise ${_getTokenPoolCruiseMs() / 1000}s) [v13.2]`,
   );
 }
 
@@ -3922,9 +3977,10 @@ async function monitorActiveQuota() {
         // ── 消息锚定核心: 波动=有人发消息→立即切到新账号, 确保下条消息用新号 ──
         // v7.3: 自动切号冷却 — 上次切号15s内不再触发, 避免连续切号风暴
         // v9.2: 活跃账号已锁定 → 不自动切走 (道法自然: 用户主动锁定优先于自动策略)
-        const switchCooldown = Date.now() - _lastSwitchTime < 15000;
+        const switchCooldown =
+          Date.now() - _lastSwitchTime < _getSwitchCooldownMs();
         const injectCooldown =
-          Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
+          Date.now() - _lastInjectFail < _getInjectFailCooldown(); // v13.4
         if (acc.skipAutoSwitch) {
           log(`📌 活跃账号已锁定·跳过自动切号: ${acc.email.substring(0, 20)}`);
         } else if (injectCooldown && !_switching) {
@@ -4051,9 +4107,10 @@ async function monitorActiveQuota() {
         ? result.daily < _getAutoSwitchThreshold()
         : Math.min(result.daily, snapWeekly) < _getAutoSwitchThreshold();
 
-      const exhaustCooldown = Date.now() - _lastSwitchTime < 15000;
+      const exhaustCooldown =
+        Date.now() - _lastSwitchTime < _getSwitchCooldownMs();
       const exhaustInjectCd =
-        Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
+        Date.now() - _lastInjectFail < _getInjectFailCooldown(); // v13.4
       if (
         isExhausted &&
         autoRotate &&
@@ -5862,9 +5919,10 @@ function activate(context) {
         const newText = lastChange.text;
         if (!newText || newText.length < 20 || newText.length > 500) return;
         if (/rate.?limit.?exceeded|Rate limit error/i.test(newText)) {
-          const cooldown = Date.now() - _lastSwitchTime < 10000;
+          const cooldown =
+            Date.now() - _lastSwitchTime < _getRateLimitCooldownMs();
           const rlInjectCd =
-            Date.now() - _lastInjectFail < INJECT_FAIL_COOLDOWN; // v13.4
+            Date.now() - _lastInjectFail < _getInjectFailCooldown(); // v13.4
           if (cooldown || rlInjectCd) return; // 刚切过或注入失败冷却中
           log(
             `🚨 rate-limit intercepted in document! Triggering proactive switch...`,

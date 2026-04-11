@@ -1,5 +1,37 @@
 # Changelog
 
+## v17.1.0 — 去芜留菁·44常量零残留 (2026-04-11)
+
+### 核心: 剩余16个硬编码常量全部getter化
+
+v17.0完成28个常量动态化后，审视发现仍有16个行为常量以`const`硬编码。v17.1彻底清除，实现**44常量零残留**。
+
+| 分类 | 常量 | getter | 配置键 |
+|------|------|--------|--------|
+| 注入冷却 | `INJECT_FAIL_COOLDOWN` | `_getInjectFailCooldown()` | `wam.injectFailCooldownMs` |
+| 清理间隔 | `PURGE_INTERVAL_MS` | `_getPurgeIntervalMs()` | `wam.purgeIntervalMs` |
+| 代理缓存 | `PROXY_CACHE_TTL` | `_getProxyCacheTtl()` | `wam.proxyCacheTtlMs` |
+| 代理失败 | `PROXY_FAIL_TTL` | `_getProxyFailTtl()` | `wam.proxyFailTtlMs` |
+| Claims缓存 | `CLAIMS_CACHE_TTL` | `_getClaimsCacheTtl()` | `wam.claimsCacheTtlMs` |
+| 额度节流 | `QUOTA_MIN_INTERVAL` | `_getQuotaMinInterval()` | `wam.quotaMinIntervalMs` |
+| 429退避 | `QUOTA_429_BACKOFF` | `_getQuota429Backoff()` | `wam.quota429BackoffMs` |
+| Relay IP | `RELAY_IP_TTL` | `_getRelayIpTtl()` | `wam.relayIpTtlMs` |
+| Pool冲刺 | `TOKEN_POOL_BURST_MS` | `_getTokenPoolBurstMs()` | `wam.tokenPool.burstMs` |
+| Pool巡航 | `TOKEN_POOL_CRUISE_MS` | `_getTokenPoolCruiseMs()` | `wam.tokenPool.cruiseMs` |
+| Pool冲刺时长 | `TOKEN_POOL_BURST_DURATION` | `_getTokenPoolBurstDuration()` | `wam.tokenPool.burstDurationMs` |
+| Pool续期边距 | `TOKEN_POOL_MARGIN` | `_getTokenPoolMargin()` | `wam.tokenPool.marginMs` |
+| 冲刺并行 | `POOL_PARALLEL_BURST` | `_getPoolParallelBurst()` | `wam.tokenPool.parallelBurst` |
+| 巡航并行 | `POOL_PARALLEL_CRUISE` | `_getPoolParallelCruise()` | `wam.tokenPool.parallelCruise` |
+| 拉黑阈值 | `POOL_TEMP_BAN_THRESHOLD` | `_getPoolTempBanThreshold()` | `wam.tokenPool.tempBanThreshold` |
+| 拉黑时长 | `POOL_TEMP_BAN_DURATION` | `_getPoolTempBanDuration()` | `wam.tokenPool.tempBanDurationMs` |
+
+### 同时修复
+
+- **文件头版本注释**: `v16.0` → `v17.1`
+- **`package.json`**: 新增16个配置属性声明
+
+---
+
 ## v17.0.0 — 道法自然·零硬编码·动态配置·真正实现彻底的适配 (2026-04-11)
 
 ### 核心突破: 从根本底层去除一切硬编码
