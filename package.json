@@ -1,7 +1,7 @@
 {
   "name": "windsurf-login-helper",
   "displayName": "WAM · Windsurf Account Manager",
-  "description": "WAM v17.18 — 主仓归宗·默认源指 windsurf-assistant·多镜像 jsDelivr fallback·DNS 污染自规避·autoDiscover 默认开·秒切引擎·Devin sessionToken 预热· 道法自然",
+  "description": "无感切号 · 账号管理 — 写代码时额度耗尽自动切号，毫无中断",
   "version": "17.18.0",
   "publisher": "zhouyoukang",
   "repository": { "type": "git", "url": "https://github.com/zhouyoukang/windsurf-assistant.git" },
