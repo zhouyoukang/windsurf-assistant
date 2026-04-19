@@ -2,7 +2,7 @@
   "name": "windsurf-assistant",
   "displayName": "Windsurf Assistant · 道Agent + 无感切号",
   "description": "道Agent 本源 (道德经 SP 注入 · 化除 rules/skills/workflows/memories 侧信道) + 无感切号 (百号轮转 · 额度耗尽自切) · 二核合一 · 道法自然",
-  "version": "17.21.0",
+  "version": "17.22.0",
   "publisher": "zhouyoukang",
   "repository": { "type": "git", "url": "https://github.com/zhouyoukang/windsurf-assistant.git" },
   "homepage": "https://github.com/zhouyoukang/windsurf-assistant",

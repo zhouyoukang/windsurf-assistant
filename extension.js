@@ -397,7 +397,7 @@ const RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 const RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.21.0"; // 集中版本号 — 道法自然·一处定义 | v17.21.0: 四键一行·热切 invert↔passthrough·纯 HTTP 无 Reload·OriginCtl.ensure 分冷热·太上不知有之·唯变所适
+const WAM_VERSION = "17.22.0"; // v17.22.0: 根本归一 · restore-all-force 三层扫 · 启动自净 · 官方Agent 真撤锚 · proxy 加 URL/上游/trailer 日志 · 改写失败兜底 · 逆流寻本源
 
 let _store = null;
 let _sidebarProvider = null;
@@ -6464,11 +6464,24 @@ async function handleWebviewMessage(msg) {
       break;
     }
     case "setOrigin": {
-      // v17.21 · 分冷热 · 唯变所适 · 太上不知有之
+      // v17.22 · 二义分明 · 官方Agent = 真正撤锚 + 杀 proxy (原生直通 · 零中间层)
+      //                    道Agent = 锚三层 + 起 proxy invert
       // 热路径 · 状态栏静默提示 (用户无感)
       // 冷路径 · 弹 Reload 按钮 (一次性手续 · 让用户知其所以然)
       try {
-        const result = await OriginCtl.ensure(msg.mode);
+        let result;
+        if (msg.mode === "passthrough") {
+          // 官方Agent: 彻底撤 secret/settings/globalState 三层本地残锚 + 杀 proxy
+          // 任何之后的 Cascade 请求都原生直连云端 · 零回弹
+          await OriginCtl.deactivate();
+          result = {
+            mode: "off",
+            reload: true,
+            message: "官方Agent · 撤锚 + 杀 proxy · 原生直通",
+          };
+        } else {
+          result = await OriginCtl.ensure(msg.mode);
+        }
         if (!result) break;
         if (result.reload) {
           const choice = await vscode.window.showInformationMessage(
@@ -7422,7 +7435,30 @@ function activate(context) {
   _loadInUse(_store); // 恢复使用中标记 (重启不丢失)
   loadMode();
   // v17.19 · 本源状态恢复 (ping 校准 · 防 stale state)
-  OriginCtl.init().catch((e) => log(`origin init err: ${e.message}`));
+  // v17.22 · 启动即扫三层残锚 (secret/settings/globalState 内的 127.0.0.1/localhost)
+  //         安全网: 用户崩溃/手动卸载 等情形留下的残锚永不再累
+  //         幂等: 三层皆净则零操作; 否则静默扫, 不打扰 (太上不知有之)
+  (async () => {
+    try {
+      await OriginCtl.init();
+      if (_origin === "off") {
+        const dir = _origFindDir();
+        if (dir) {
+          try {
+            _origAnchorCmd(dir, "restore-all-force", []);
+            log("boot sweep: restore-all-force · done");
+          } catch (e) {
+            // 旧版本 锚.py 无此命令 → 静默跳过 (不报错)
+            log(
+              `boot sweep: restore-all-force 跳过 (${(e.message || "").slice(0, 80)})`,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      log(`origin init err: ${e.message}`);
+    }
+  })();
   log(
     `startup mode: ${_mode} | snapshots: ${_quotaSnapshots.size} | inUse: ${_store._inUse.size}`,
   );
@@ -8129,10 +8165,12 @@ function activate(context) {
       refreshAll();
     }),
     vscode.commands.registerCommand("wam.originPassthrough", async () => {
+      // v17.22 · 官方Agent 真正撤锚 (不再仅切 proxy 模式 · 与 setOrigin.passthrough 同)
       try {
-        const r = await OriginCtl.ensure("passthrough");
-        if (r && r.message)
-          vscode.window.showInformationMessage(`WAM 本源: ${r.message}`);
+        await OriginCtl.deactivate();
+        vscode.window.showInformationMessage(
+          "WAM 本源: 官方Agent · 撤锚 + 杀 proxy · 请 Reload Window 生效",
+        );
       } catch (e) {
         vscode.window.showErrorMessage(`WAM 本源 · ${e.message}`);
       }
@@ -8744,6 +8782,12 @@ async function _origRestoreAll(dir) {
   } catch (e) {
     _origLog(`restore-gs: ${e.message}`);
   }
+  // v17.22 · 安全网: 无备份也能扫 · 三层之残锚永不漏
+  try {
+    _origAnchorCmd(dir, "restore-all-force");
+  } catch (e) {
+    _origLog(`restore-all-force: ${e.message.slice(0, 80)}`);
+  }
 }
 
 // ── 对外控制器 (init · activate · deactivate · toggle · deactivateSync) ──
@@ -8896,6 +8940,10 @@ const OriginCtl = {
       } catch {}
       try {
         _origAnchorCmd(dir, "restore-globalstate");
+      } catch {}
+      // v17.22 · 安全网 (同 async restore)
+      try {
+        _origAnchorCmd(dir, "restore-all-force");
       } catch {}
     }
     _origKillPid(_originPid);

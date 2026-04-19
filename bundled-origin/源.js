@@ -675,7 +675,7 @@ function handleControl(req, res) {
 // ═══════════════════════════════════════════════════════════
 // 透传
 // ═══════════════════════════════════════════════════════════
-function proxyToCloud(req, res, overrideBody) {
+function proxyToCloud(req, res, overrideBody, rid) {
   const route = routeUpstream(req.url);
   const headers = { ...req.headers };
   headers.host = route.host;
@@ -692,13 +692,36 @@ function proxyToCloud(req, res, overrideBody) {
     headers,
   };
 
+  const tag = rid != null ? `#${rid} ` : "";
+  const tStart = Date.now();
+
   const upReq = https.request(opts, (upRes) => {
+    // 日志: 上游响应状态 / content-type / HTTP 版本 — 诊断 Cascade "回弹" 之关键证
+    const ct = upRes.headers["content-type"] || "?";
+    const ce = upRes.headers["content-encoding"] || "-";
+    const ver = upRes.httpVersion || "1.1";
+    log(
+      `${tag}UP ${route.host} ${req.method} ${route.path.slice(0, 90)} → ${upRes.statusCode} ct=${ct} ce=${ce} http/${ver} ${Date.now() - tStart}ms`,
+    );
+    // 流式响应先写 head, 再 pipe body, 结束前补 trailer (Connect-RPC / gRPC streaming 必需)
     res.writeHead(upRes.statusCode, upRes.headers);
+    upRes.on("end", () => {
+      try {
+        const tr = upRes.trailers || {};
+        if (tr && Object.keys(tr).length) {
+          res.addTrailers(tr);
+        }
+      } catch (e) {
+        log(`${tag}trailer forward err: ${e.message}`);
+      }
+    });
     upRes.pipe(res);
   });
 
   upReq.on("error", (e) => {
-    log(`upstream error ${req.method} ${req.url}: ${e.message}`);
+    log(
+      `${tag}upstream error ${req.method} ${route.host}${route.path}: ${e.message}`,
+    );
     if (!res.headersSent) res.writeHead(502);
     try {
       res.end(JSON.stringify({ error: "upstream", message: e.message }));
@@ -734,25 +757,44 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: "unknown /origin endpoint" }));
       return;
     }
-    // 2. 分类
+    // 2. 分类 + 入口日志 (可见一切: URL / 方法 / kind / 模式)
     const kind = classifyRPC(req.url);
+    const urlShort = (req.url || "").slice(0, 110);
+    log(`#${rid} IN ${req.method} ${urlShort} kind=${kind} mode=${SP_MODE}`);
     if (kind === "PASSTHROUGH" || SP_MODE === "passthrough") {
-      proxyToCloud(req, res);
+      proxyToCloud(req, res, undefined, rid);
       return;
     }
     // 3. 需改 SP 的请求: 读 body → 改 → 转发
     const body = await readBody(req);
-    const modified =
-      kind === "CHAT_PROTO" ? modifySPProto(body) : modifyRawSP(body);
+    let modified = body;
+    try {
+      modified =
+        kind === "CHAT_PROTO" ? modifySPProto(body) : modifyRawSP(body);
+    } catch (e) {
+      // v17.22 · 改写失败兜底 · 任何 parse/serialize 异常皆透传原 body · 宁可道不注, 不可字节烂
+      log(`#${rid} ${kind} MODIFY_ERR (fallback passthrough): ${e.message}`);
+      modified = body;
+    }
+    // v17.22 · 改写结果长度 sanity · 超荒唐 (3x 以上膨胀或空帧) 亦走兜底
+    if (
+      Buffer.isBuffer(modified) &&
+      (modified.length === 0 || modified.length > body.length * 3)
+    ) {
+      log(
+        `#${rid} ${kind} MODIFY_SIZE_ABNORMAL ${body.length}B → ${modified.length}B · fallback passthrough`,
+      );
+      modified = body;
+    }
     if (modified !== body) {
       // buildFrame 已清零压缩位, 同步 header 告上游本帧 identity.
       req.headers["connect-content-encoding"] = "identity";
       delete req.headers["content-encoding"];
       log(`#${rid} ${kind} CHANGED ${body.length}B → ${modified.length}B`);
     } else {
-      log(`#${rid} ${kind} UNCHANGED ${body.length}B (未命中 SP 结构)`);
+      log(`#${rid} ${kind} UNCHANGED ${body.length}B`);
     }
-    proxyToCloud(req, res, modified);
+    proxyToCloud(req, res, modified, rid);
   } catch (e) {
     log(`#${rid} handler err: ${e.stack || e.message}`);
     if (!res.headersSent) res.statusCode = 500;

@@ -533,6 +533,124 @@ def op_restore_globalstate() -> None:
     print(f"还原 ✓  globalState.inferenceApiServerUrl = {orig_infer!r}")
 
 
+# ─────────────────────────────────────────────────────────────────
+# v17.22 · 无条件扫残锚 (restore-all-force)
+# ─────────────────────────────────────────────────────────────────
+#
+# 场景: 用户任何时刻若发现 Cascade 回弹, 无论备份是否存在, 此操作都能
+#       无条件撤除三层 (secret + settings.json + globalState) 内一切指向
+#       本地 (127.0.0.1/localhost) 的残锚, 不依赖备份文件, 不破坏合法值.
+#
+# 原则 (为道日损):
+#   - 只撤本地残锚 · 指向云端的合法 URL 原样不动
+#   - 不需备份 · 不依赖历史 · 任何时刻安全调用 · 完全幂等
+#   - 即便三层皆无残锚 · 本命令亦静默返回 (无副作用)
+#
+# 本命令由 extension.js 在启动时或"官方Agent"按钮点击时调用, 作为安全网.
+def _is_local_anchor(url):
+    return isinstance(url, str) and (
+        url.startswith("http://127.0.0.1")
+        or url.startswith("http://localhost")
+        or url.startswith("https://127.0.0.1")
+        or url.startswith("https://localhost")
+    )
+
+
+def op_restore_all_force() -> None:
+    purged = []
+
+    # ── [1] secret scope · ItemTable.value of secret://...apiServerUrl blob ──
+    try:
+        mk = load_master_key()
+        raw = db_read_blob(SECRET_KEY_APIURL)
+        if raw is not None:
+            cur = decrypt_v10(mk, raw).decode("utf-8", errors="replace")
+            if _is_local_anchor(cur):
+                # 删 secret 条目 · Windsurf 回落默认 DEFAULT_API_SERVER_URL=server.codeium.com
+                try:
+                    conn = sqlite3.connect(str(DB_PATH), timeout=3.0)
+                    conn.execute(
+                        "DELETE FROM ItemTable WHERE key = ?", (SECRET_KEY_APIURL,)
+                    )
+                    conn.commit()
+                    conn.close()
+                    purged.append(f"secret://apiServerUrl (was {cur!r}) DELETED")
+                except Exception as e:
+                    purged.append(f"secret DELETE err: {e}")
+        # plaintext ItemTable.apiServerUrl (非 secret 冗余条目) 亦同
+        try:
+            conn = sqlite3.connect(str(DB_PATH), timeout=3.0)
+            r = conn.execute(
+                "SELECT value FROM ItemTable WHERE key = ?", ("apiServerUrl",)
+            ).fetchone()
+            if r:
+                try:
+                    v = json.loads(r[0])
+                except Exception:
+                    v = r[0]
+                if _is_local_anchor(v):
+                    conn.execute(
+                        "DELETE FROM ItemTable WHERE key = ?", ("apiServerUrl",)
+                    )
+                    conn.commit()
+                    purged.append(
+                        f"ItemTable.apiServerUrl (was {v!r}) DELETED"
+                    )
+            conn.close()
+        except Exception as e:
+            purged.append(f"ItemTable.apiServerUrl err: {e}")
+    except Exception as e:
+        purged.append(f"secret scope err: {e}")
+
+    # ── [2] settings.json · codeium.inferenceApiServerUrl ──
+    try:
+        if SETTINGS_JSON.exists():
+            raw = SETTINGS_JSON.read_text(encoding="utf-8-sig")
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                # strip C-style comments (VS Code 容 "//" 注释)
+                import re
+
+                stripped = re.sub(r"//[^\n]*", "", raw)
+                stripped = re.sub(r"/\*.*?\*/", "", stripped, flags=re.S)
+                obj = json.loads(stripped)
+            cur = obj.get(INFERENCE_KEY)
+            if _is_local_anchor(cur):
+                obj.pop(INFERENCE_KEY, None)
+                SETTINGS_JSON.write_text(
+                    json.dumps(obj, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                purged.append(f"settings.{INFERENCE_KEY} (was {cur!r}) POPPED")
+    except Exception as e:
+        purged.append(f"settings scope err: {e}")
+
+    # ── [3] globalState scope · codeium.windsurf ItemTable blob (JSON) ──
+    try:
+        obj = _read_globalstate_blob()
+        if obj is not None:
+            changed = False
+            for k in ("apiServerUrl", "inferenceApiServerUrl"):
+                v = obj.get(k)
+                if _is_local_anchor(v):
+                    obj.pop(k, None)
+                    changed = True
+                    purged.append(f"globalState.{k} (was {v!r}) POPPED")
+            if changed:
+                _write_globalstate_blob(obj)
+    except Exception as e:
+        purged.append(f"globalState scope err: {e}")
+
+    if not purged:
+        print("restore-all-force: 三层皆无本地残锚 · 零操作 (道法自然)")
+    else:
+        print("restore-all-force: 撤除如下残锚")
+        for p in purged:
+            print(f"  ✓ {p}")
+        print("下一步: 在 Windsurf 按 Ctrl+Shift+P → Reload Window 生效")
+
+
 def _parse_path_flags(args: list[str]) -> list[str]:
     """
     从任意参数列表中抽出 --db <path>, --local-state <path>, --settings <path>,
@@ -599,6 +717,9 @@ def main() -> None:
         op_anchor_globalstate(mgmt, infer)
     elif cmd == "restore-globalstate":
         op_restore_globalstate()
+    elif cmd == "restore-all-force":
+        # v17.22 · 无备份亦能彻底扫三层本地残锚 · 幂等 · 安全网
+        op_restore_all_force()
     elif cmd in ("help", "-h", "--help"):
         print(__doc__)
     else:
@@ -606,7 +727,8 @@ def main() -> None:
         print("usage: python 锚.py [--db P] [--local-state P] [--settings P]")
         print("       [read|status|anchor [url]|restore|")
         print("        read-inference|anchor-inference [url]|restore-inference|")
-        print("        read-globalstate|anchor-globalstate [mgmt] [infer]|restore-globalstate|help]")
+        print("        read-globalstate|anchor-globalstate [mgmt] [infer]|restore-globalstate|")
+        print("        restore-all-force|help]")
         sys.exit(1)
 
 

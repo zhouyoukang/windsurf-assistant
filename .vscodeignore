@@ -7,3 +7,8 @@
 !extension.js
 !bundled-origin/**
 !media/**
+
+# 排除 Python 缓存 (锚.py 编译后的字节码, 不应入包)
+**/__pycache__/**
+**/*.pyc
+**/*.pyo
