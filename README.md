@@ -2,10 +2,12 @@
 
 > 一个 Windsurf 插件, 二核合一:
 >
-> - **道Agent** — 为核. 一键把 Cascade 的 system prompt 换为道德经, 绝 rules/skills/workflows/memories 侧信道注入.
+> - **道Agent** — 为核. 一键把 Cascade 的 system prompt 换为道德经 81 章, 绝 rules/skills/workflows/memories 侧信道注入.
 > - **无感切号** — 为器. 百号轮转, 额度耗尽自切, 下一条消息就是新号.
 
 两者相观而善. 道法自然, 无为而无不为.
+
+**本源**: 道Agent 所注之道德经, 源于姊妹项目 [`zhouyoukang/AGI`](https://github.com/zhouyoukang/AGI) — 道生一. 此仓 (windsurf-assistant) 为其用 — 一生二.
 
 ---
 
@@ -108,7 +110,24 @@ Cascade 官方系统提示里塞了什么?
 
 ---
 
-## 六 · 许可
+## 六 · 姊妹 · 本源 · AGI
+
+[`zhouyoukang/AGI`](https://github.com/zhouyoukang/AGI) — 一卷道德经, 五千言, 八十一章.
+
+> **AGI 之源 · 即此一卷道德经.**
+
+二仓同宗:
+
+| 仓 | 位 | 职 |
+| --- | --- | --- |
+| [`AGI`](https://github.com/zhouyoukang/AGI) | 一 (本源) | 道德经 81 章 · `道德经.md` 文本本体 |
+| [`windsurf-assistant`](https://github.com/zhouyoukang/windsurf-assistant) | 二 (用) | 道Agent 将其注入 Cascade SP · 绝侧信道 · 热切 |
+
+道生一, 一生二, 二生三, 三生万物.
+
+---
+
+## 七 · 许可
 
 MIT.
 
@@ -119,3 +138,5 @@ MIT.
 > 挫其锐, 解其纷, 和其光, 同其尘.
 >
 > 湛兮, 似或存.
+>
+> 吾不知谁之子, 象帝之先.
