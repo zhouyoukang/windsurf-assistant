@@ -2,7 +2,7 @@
   "name": "windsurf-assistant",
   "displayName": "Windsurf Assistant · 道Agent + 无感切号",
   "description": "道Agent 本源 (道德经 SP 注入 · 化除 rules/skills/workflows/memories 侧信道) + 无感切号 (百号轮转 · 额度耗尽自切) · 二核合一 · 道法自然",
-  "version": "17.24.0",
+  "version": "17.35.0",
   "publisher": "zhouyoukang",
   "repository": { "type": "git", "url": "https://github.com/zhouyoukang/windsurf-assistant.git" },
   "homepage": "https://github.com/zhouyoukang/windsurf-assistant",
@@ -34,9 +34,8 @@
       ]
     },
     "commands": [
-      { "command": "wam.originInvert", "title": "道Agent: 启 (道德经 SP · 绝侧信道)", "category": "Windsurf Assistant" },
-      { "command": "wam.originPassthrough", "title": "道Agent: 启 (官方原味 · 零改写)", "category": "Windsurf Assistant" },
-      { "command": "wam.originOff", "title": "道Agent: 关闭 (restore 锚 · kill proxy)", "category": "Windsurf Assistant" },
+      { "command": "wam.originInvert", "title": "道Agent: 切道Agent (道德经 SP · 绝侧信道)", "category": "Windsurf Assistant" },
+      { "command": "wam.originPassthrough", "title": "道Agent: 切官方Agent (原味 · 撚锁 · 杀 proxy)", "category": "Windsurf Assistant" },
       { "command": "wam.openEditor", "title": "切号: 管理面板", "category": "Windsurf Assistant" },
       { "command": "wam.status", "title": "切号: 状态", "category": "Windsurf Assistant" },
       { "command": "wam.wamMode", "title": "切号: WAM 模式 (自动轮转)", "category": "Windsurf Assistant" },
@@ -54,7 +53,8 @@
       { "command": "wam.restore", "title": "切号: 从归档恢复账号", "category": "Windsurf Assistant" },
       { "command": "wam.clearBlacklist", "title": "切号: 清空黑名单 (Devin 复活)", "category": "Windsurf Assistant" },
       { "command": "wam.testDevinSwitch", "title": "切号: 测试 Devin 链路", "category": "Windsurf Assistant" },
-      { "command": "wam.checkUpdate", "title": "Windsurf Assistant: 检查更新", "category": "Windsurf Assistant" }
+      { "command": "wam.checkUpdate", "title": "Windsurf Assistant: 检查更新", "category": "Windsurf Assistant" },
+      { "command": "wam.verifyEndToEnd", "title": "全链路十层自检 (E2E)", "category": "Windsurf Assistant" }
     ],
     "configuration": {
       "title": "Windsurf Assistant",
@@ -120,7 +120,15 @@
         "wam.origin.anchorTimeout": { "type": "number", "default": 15000, "description": "锚.py 执行超时 (ms)" },
         "wam.origin.fetchTimeout": { "type": "number", "default": 2000, "description": "Origin 控制面 HTTP 超时 (ms)" },
         "wam.origin.upstreamMgmt": { "type": "string", "default": "server.self-serve.windsurf.com", "description": "管理上游域名" },
-        "wam.origin.upstreamInfer": { "type": "string", "default": "inference.codeium.com", "description": "推理上游域名" }
+        "wam.origin.upstreamInfer": { "type": "string", "default": "inference.codeium.com", "description": "推理上游域名" },
+        "wam.origin.upstreamProxy": { "type": "string", "default": "", "description": "v17.33 · proxy 连云走 HTTP CONNECT tunnel (如 http://127.0.0.1:7890) · 留空 = 关 · 设 'disabled' 明确关 · 设 URL 明确走" },
+        "wam.origin.autoDetectProxy": { "type": "boolean", "default": false, "description": "v17.33.1 · 若 upstreamProxy 留空时是否自探 127.0.0.1:7890/10809/1080/8080/7891 · 默认关 (某些 Clash 不稳 · 直连更稳)" },
+        "wam.origin.defaultMode": {
+          "type": "string",
+          "enum": ["invert", "passthrough"],
+          "default": "invert",
+          "description": "v17.25 · 首装默认模式 (道法自然 · 默认道Agent) · 用户首次主动选官方Agent后本项失效 (尊重用户意愿)"
+        }
       }
     }
   }

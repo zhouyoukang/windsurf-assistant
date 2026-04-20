@@ -387,17 +387,22 @@ def op_restore_inference() -> None:
     bk = json.loads(SETTINGS_BACKUP.read_text(encoding="utf-8"))
     s = _load_settings()
     orig = bk.get("original")
+    # v17.29 · 先归档备份 · 再改 settings · 防 datetime 等异常导致 "key 已删但备份仍在" 的
+    #         循环剥除灾难 (每次 deactivate 都抛 AttributeError → 每次都剥 key)
+    # 归档备份 (用与 op_restore_globalstate 一致的正确写法)
+    SETTINGS_BACKUP.rename(
+        SETTINGS_BACKUP.with_name(
+            SETTINGS_BACKUP.stem
+            + "_restored_"
+            + datetime.now().strftime("%Y%m%d_%H%M%S")
+            + ".json"
+        )
+    )
     if orig is None:
         s.pop(INFERENCE_KEY, None)
     else:
         s[INFERENCE_KEY] = orig
     _save_settings(s)
-    # 归档备份
-    SETTINGS_BACKUP.rename(
-        SETTINGS_BACKUP.with_name(
-            f"_settings_backup_restored_{datetime.datetime.now(datetime.UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
-        )
-    )
     print(f"还原 ✓  {INFERENCE_KEY} = {orig!r}")
 
 

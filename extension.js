@@ -397,7 +397,7 @@ const RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 const RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.24.0"; // v17.24.0: 全量软编码 · 端口/主机/超时/上游 皆 _cfg getter · 跨平台 kill-by-port · 动态盘符发现 · 源.js/锚.py env 覆盖 · 唯变所适 · 道法自然
+const WAM_VERSION = "17.35.0"; // v17.34.0: 道法自然 · 账号池认证补齐 · fetchAccountQuota 三通道 (native/proxy/direct) headers 加 Authorization: Bearer ${authToken} · 消除 ch1/ch2/ch3 all_official_*_failed · 账号池 plan null → 真 plan · 179 之"回弹" 深层补余 · 无为而无不为
 
 let _store = null;
 let _sidebarProvider = null;
@@ -422,9 +422,16 @@ const MODE_FILE = path.join(WAM_DIR, "wam_mode.json");
 
 // v17.19 · 本源 Origin 状态 (与 _mode 正交, 账号层 vs SP 注入层)
 // 'off' = 未启反代 | 'invert' = 道德经注入 | 'passthrough' = 零改写直通
+// v17.25 · 二相归一 · 用户视角只存二态: 道Agent (invert) ↔ 官方Agent (passthrough)
+// 'off' 是技术态 · 仅 proxy 未启之瞬; 用户意愿通过 _userIntent 持久
 let _origin = "off";
 let _originPort = 0;
 let _originPid = 0;
+// v17.25 · 用户意愿 ("invert" | "passthrough" | null)
+//   null        = 从未设置 (首装) · 走 _cfg("origin.defaultMode", "invert")
+//   "invert"    = 用户曾选道Agent · 启动自动 resume
+//   "passthrough" = 用户曾选官方Agent · 启动不自启 · 尊重用户
+let _userIntent = null;
 const ORIGIN_STATE_FILE = path.join(WAM_DIR, "origin_state.json");
 const ORIGIN_CACHE_FILE = path.join(WAM_DIR, "origin_discovery.json");
 const ORIGIN_LOG_FILE = path.join(WAM_DIR, "origin_proxy.log");
@@ -2661,6 +2668,7 @@ function _httpsPostRawViaProxy(
   targetUrl,
   body,
   timeout = 12000,
+  opts = {},
 ) {
   const _startTs = Date.now();
   const _rej = (err) => {
@@ -2697,6 +2705,7 @@ function _httpsPostRawViaProxy(
             "Content-Length": Buffer.byteLength(body),
             Host: parsed.hostname,
             "connect-protocol-version": "1",
+            ...(opts.headers || {}),
           },
           servername: parsed.hostname,
           rejectUnauthorized: false,
@@ -3181,7 +3190,12 @@ async function _devinLogin(email, password) {
       return { status: 200, text: JSON.stringify(r || {}) };
     },
     async () => {
-      const r = await _httpsPost(url, payload, { timeout: 8000, headers });
+      // v17.35: _skipAutoProxy 确保 direct 通道真正直连 (windsurf.com 不需要代理)
+      const r = await _httpsPost(url, payload, {
+        timeout: 8000,
+        headers,
+        _skipAutoProxy: true,
+      });
       return { status: 200, text: JSON.stringify(r || {}) };
     },
   ];
@@ -3211,11 +3225,14 @@ async function _devinLogin(email, password) {
     );
     return result;
   } catch (aggErr) {
+    // v17.35: 详细通道错误日志 (native/proxy/direct 分别报告)
+    const errs = aggErr?.errors || [];
+    const chNames = ["native", "proxy", "direct"];
+    for (let i = 0; i < errs.length; i++) {
+      log(`_devinLogin ch[${chNames[i] || i}]: ${errs[i]?.message || errs[i]}`);
+    }
     const msg =
-      (aggErr &&
-        aggErr.errors &&
-        aggErr.errors[0] &&
-        aggErr.errors[0].message) ||
+      (errs[0] && errs[0].message) ||
       String(aggErr && aggErr.message ? aggErr.message : aggErr);
     return { ok: false, error: msg };
   }
@@ -3269,7 +3286,12 @@ async function _devinPostAuth(auth1Token, orgId) {
       return { status: 200, text: JSON.stringify(r || {}) };
     },
     async () => {
-      const r = await _httpsPost(url, payload, { timeout: 8000, headers });
+      // v17.35: _skipAutoProxy 确保 direct 通道真正直连 (windsurf.com 不需要代理)
+      const r = await _httpsPost(url, payload, {
+        timeout: 8000,
+        headers,
+        _skipAutoProxy: true,
+      });
       return { status: 200, text: JSON.stringify(r || {}) };
     },
   ];
@@ -3593,51 +3615,61 @@ async function fetchAccountQuota(email, password) {
   }
   _quotaFetchCooldown.set(key, { nextAllowedTs: now + _getQuotaMinInterval() });
 
-  // v17.8 道法自然 · 披褐怀玉 · 彻底对齐: 统一 token 入口 (idToken 或 sessionToken 皆可)
-  //   正常账号: Firebase login → idToken
-  //   Devin 账号: Firebase 失败 → _devinFullSwitch → sessionToken
-  //   上层代码零改动 · scan/purge/monitor/pool 全部统一走 fetchAccountQuota
+  // v17.35 道法自然 · 万法归宗 · Devin 迁移全面适配
+  // 背景: Cognition 收购 Windsurf · 全部账号迁移至 Devin · Firebase idToken 被 backend 拒绝 ("migrated")
+  // 策略:
+  //   1. 已知 Devin 账号 → 跳过 Firebase · 直接 _devinFullSwitch (省去超时浪费)
+  //   2. Firebase 失败 → 无条件尝试 Devin fallback (不再限于 INVALID/WRONG 模式)
+  //   3. GetPlanStatus 返回 "migrated" → 标记账号 · 下次循环直走 Devin
   let authToken = null;
-  const loginResult = await getCachedToken(email, password);
-  if (loginResult.ok) {
-    authToken = loginResult.idToken;
-  } else {
-    // Firebase login 失败 — 尝试 Devin 通道 (仅当账号已标记 devin, 或 Firebase INVALID)
-    _tokenCache.delete(key);
-    const err = loginResult.error || "";
-    const acc = _store
-      ? _store.accounts.find((a) => a.email.toLowerCase() === key)
-      : null;
-    const isDevinCandidate =
-      (acc && acc._authSystem === "devin") ||
-      /INVALID|NOT_FOUND|DISABLED|WRONG/.test(err);
-    if (!isDevinCandidate) {
-      return { ok: false, error: err };
-    }
-    log(`fetchQuota: ${email} Firebase FAIL(${err}) — 尝试 Devin fallback`);
+  const acc = _store
+    ? _store.accounts.find((a) => a.email.toLowerCase() === key)
+    : null;
+  if (acc && acc._authSystem === "devin") {
+    // 快速路径: 已知 Devin 账号, 跳过 Firebase (省 ~10-42s 超时)
     const ds = await _devinFullSwitch(email, password);
-    if (!ds.ok) {
-      log(`fetchQuota: ${email} Devin FAIL ${ds.stage}/${ds.error}`);
+    if (ds.ok) {
+      authToken = ds.sessionToken;
+      log(
+        `fetchQuota: ${email} devin-fast sessionToken=${ds.sessionToken.substring(0, 30)}...`,
+      );
+    } else {
+      log(`fetchQuota: ${email} devin-fast FAIL ${ds.stage}/${ds.error}`);
       return { ok: false, error: `devin_${ds.stage}: ${ds.error}` };
     }
-    authToken = ds.sessionToken; // devin-session-token$<JWT>
-    // 更新 Devin 元数据 (vs 重复劳动的旧路径)
-    if (acc) {
-      acc._authSystem = "devin";
-      acc._devinUserId = ds.userId;
-      acc._devinAccountId = ds.accountId;
-      acc._devinOrgId = ds.primaryOrgId;
-      acc._devinSessionAt = Date.now();
-      acc._devinVerified = true;
-      acc._lastVerified = Date.now();
-      delete acc._verifyFailed;
-      delete acc._verifyFailedAt;
-      acc._verifyFailedCount = 0;
-      delete acc._unverified;
+  } else {
+    const loginResult = await getCachedToken(email, password);
+    if (loginResult.ok) {
+      authToken = loginResult.idToken;
+    } else {
+      // v17.35: Firebase 失败 → 无条件尝试 Devin fallback
+      // 旧版仅在 INVALID/NOT_FOUND 时尝试 · 网络超时/all_channels_failed 被遗漏
+      _tokenCache.delete(key);
+      const err = loginResult.error || "";
+      log(`fetchQuota: ${email} Firebase FAIL(${err}) — Devin fallback`);
+      const ds = await _devinFullSwitch(email, password);
+      if (!ds.ok) {
+        log(`fetchQuota: ${email} Devin FAIL ${ds.stage}/${ds.error}`);
+        return { ok: false, error: `devin_${ds.stage}: ${ds.error}` };
+      }
+      authToken = ds.sessionToken;
+      if (acc) {
+        acc._authSystem = "devin";
+        acc._devinUserId = ds.userId;
+        acc._devinAccountId = ds.accountId;
+        acc._devinOrgId = ds.primaryOrgId;
+        acc._devinSessionAt = Date.now();
+        acc._devinVerified = true;
+        acc._lastVerified = Date.now();
+        delete acc._verifyFailed;
+        delete acc._verifyFailedAt;
+        acc._verifyFailedCount = 0;
+        delete acc._unverified;
+      }
+      log(
+        `fetchQuota: ${email} Devin OK sessionToken=${ds.sessionToken.substring(0, 30)}...`,
+      );
     }
-    log(
-      `fetchQuota: ${email} Devin OK sessionToken=${ds.sessionToken.substring(0, 30)}...`,
-    );
   }
   const proto = encodeProtoString(authToken);
   const relayHost = _getRelayHost();
@@ -3647,6 +3679,13 @@ async function fetchAccountQuota(email, password) {
 
   // v15: 5通道竞速 — Chromium原生优先, 官方API直连次之, 中继兜底
   // 优先级: Chromium原生(万法归宗) > 官方(proxy) > 官方(direct) > Relay IP > Relay(proxy)
+  // v17.34 道法自然 · 三官方通道统一加 Authorization: Bearer ${authToken}
+  //                      API 期望 header auth · body proto 为 GetPlanStatusRequest · 二者皆需
+  const _authHeaders = {
+    "Content-Type": "application/proto",
+    "connect-protocol-version": "1",
+    Authorization: "Bearer " + authToken,
+  };
   const channels = [
     // 通道0: Chromium原生 — 万法归宗 (系统代理自适应, 不依赖手动探测)
     async () => {
@@ -3654,10 +3693,7 @@ async function fetchAccountQuota(email, password) {
         try {
           const resp = await _nativeFetch(url, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/proto",
-              "connect-protocol-version": "1",
-            },
+            headers: _authHeaders,
             body: proto,
             binary: true,
             timeout: 10000,
@@ -3681,6 +3717,7 @@ async function fetchAccountQuota(email, password) {
             url,
             proto,
             10000,
+            { headers: { Authorization: "Bearer " + authToken } },
           );
           if (resp.status === 200 && resp.buf && resp.buf.length > 20)
             return resp;
@@ -3689,10 +3726,15 @@ async function fetchAccountQuota(email, password) {
       throw new Error("all_official_proxy_failed");
     },
     // 通道2: 官方API直连 (无proxy, 适合可直连Google Cloud的网络)
+    // v17.35: _skipAutoProxy 确保真正直连 (server.codeium.com 可直达)
     async () => {
       for (const url of _getOfficialPlanStatusUrls()) {
         try {
-          const resp = await _httpsPostRaw(url, proto, { timeout: 10000 });
+          const resp = await _httpsPostRaw(url, proto, {
+            timeout: 10000,
+            headers: { Authorization: "Bearer " + authToken },
+            _skipAutoProxy: true,
+          });
           if (resp.status === 200 && resp.buf && resp.buf.length > 20)
             return resp;
         } catch {}
@@ -3745,6 +3787,14 @@ async function fetchAccountQuota(email, password) {
           }
           log(`${chName}: parse fail ${resp.buf.length}B`);
         } else {
+          // v17.35: detect "migrated" signal from backend
+          const bodySniff = resp.buf
+            ? resp.buf.toString("utf8", 0, Math.min(resp.buf.length, 300))
+            : "";
+          if (resp.status === 401 && bodySniff.includes("migrated")) {
+            log(`${chName}: 401 MIGRATED`);
+            throw new Error("account_migrated");
+          }
           log(`${chName}: status=${resp.status} len=${resp.buf?.length || 0}`);
         }
         throw new Error(`${chName}_no_data`);
@@ -3763,8 +3813,22 @@ async function fetchAccountQuota(email, password) {
   });
   try {
     return await Promise.any(racePromises);
-  } catch {
-    return { ok: false, error: "quota_fetch_failed" };
+  } catch (aggErr) {
+    // v17.35: detect migration signal across all channels
+    const isMigrated = (aggErr?.errors || []).some(
+      (e) => e?.message === "account_migrated",
+    );
+    if (isMigrated && acc && acc._authSystem !== "devin") {
+      acc._authSystem = "devin";
+      _tokenCache.delete(key);
+      _invalidateDevinCache(email);
+      log(`fetchQuota: ${email} MIGRATED → marked devin · Devin路径下次生效`);
+      _saveStore();
+    }
+    return {
+      ok: false,
+      error: isMigrated ? "account_migrated" : "quota_fetch_failed",
+    };
   }
 }
 
@@ -6470,18 +6534,11 @@ async function handleWebviewMessage(msg) {
       // 冷路径 · 弹 Reload 按钮 (一次性手续 · 让用户知其所以然)
       try {
         let result;
-        if (msg.mode === "passthrough") {
-          // 官方Agent: 彻底撤 secret/settings/globalState 三层本地残锚 + 杀 proxy
-          // 任何之后的 Cascade 请求都原生直连云端 · 零回弹
-          await OriginCtl.deactivate();
-          result = {
-            mode: "off",
-            reload: true,
-            message: "官方Agent · 撤锚 + 杀 proxy · 原生直通",
-          };
-        } else {
-          result = await OriginCtl.ensure(msg.mode);
-        }
+        // v17.32 · 为道再损 · 消 179 回弹真根
+        //   旧: passthrough → deactivate (杀 proxy) · 但 LS 命令行已硬编 :8890/i · proxy 一死 chat 必回弹
+        //   新: passthrough → ensure (proxy 永在位 · SP_MODE=passthrough 纯透传 · 零改 body · LS :8890/i 永通)
+        //   两者体验等价 (proxy passthrough 不改字节), 但 ensure 不破坏 LS 连接 · 无感无回弹
+        result = await OriginCtl.ensure(msg.mode);
         if (!result) break;
         if (result.reload) {
           const choice = await vscode.window.showInformationMessage(
@@ -6497,6 +6554,64 @@ async function handleWebviewMessage(msg) {
       } catch (e) {
         vscode.window.showErrorMessage(`WAM 本源 · ${e.message}`);
         log(`setOrigin error: ${e.stack || e.message}`);
+      }
+      refreshAll();
+      break;
+    }
+    case "setCombo": {
+      // v17.31 · 一键组合原子切 · 保两轴正交 (内部调 setMode + setOrigin)
+      //   'dao'  = WAM切号 + 道Agent (道法自然 默认)
+      //   'pure' = 官方登录 + 官方Agent (纯官方 双隔离)
+      // 按用户原意 · 分别隔离各自层级 · 但免两步操作之繁
+      try {
+        if (msg.kind === "dao") {
+          // 账号层: 恢复 WAM
+          saveMode("wam");
+          _restartBackgroundServices();
+          // Agent 层: 起道 Agent (proxy + 道德经 SP 注入)
+          const r = await OriginCtl.ensure("invert");
+          const reload = r && r.reload;
+          const info = reload
+            ? "道法自然 · WAM切号 + 道Agent · 请 Reload Window 生效"
+            : "道法自然 · WAM切号 + 道Agent · 已生效";
+          if (reload) {
+            const choice = await vscode.window.showInformationMessage(
+              `WAM: ${info}`,
+              "Reload Window",
+              "稍后",
+            );
+            if (choice === "Reload Window")
+              vscode.commands.executeCommand("workbench.action.reloadWindow");
+          } else {
+            vscode.window.showInformationMessage(`WAM: ${info}`);
+          }
+        } else if (msg.kind === "pure") {
+          // 账号层: 官方登录 (停 WAM 引擎 + 清本地 + logout)
+          saveMode("official");
+          const cleaned = await cleanupThirdPartyState();
+          // Agent 层: v17.32 · ensure(passthrough) 替 deactivate · proxy 永在位 (SP_MODE=passthrough 纯透传) · 不破 LS 连接
+          const r = await OriginCtl.ensure("passthrough");
+          const reload = r && r.reload;
+          const info = reload
+            ? `纯官方 · 官方登录 + 官方Agent · 双隔离完成 (清 ${cleaned} 项) · 请 Reload Window 生效`
+            : `纯官方 · 官方登录 + 官方Agent · 双隔离完成 (清 ${cleaned} 项) · 已生效`;
+          if (reload) {
+            const choice = await vscode.window.showInformationMessage(
+              `WAM: ${info}`,
+              "Reload Window",
+              "稍后",
+            );
+            if (choice === "Reload Window")
+              vscode.commands.executeCommand("workbench.action.reloadWindow");
+          } else {
+            vscode.window.showInformationMessage(`WAM: ${info}`);
+          }
+        } else {
+          vscode.window.showWarningMessage(`WAM: 未知 combo '${msg.kind}'`);
+        }
+      } catch (e) {
+        vscode.window.showErrorMessage(`WAM 一键组合 · ${e.message}`);
+        log(`setCombo error: ${e.stack || e.message}`);
       }
       refreshAll();
       break;
@@ -6891,6 +7006,18 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .official-banner b{color:var(--red)}
 .drought-banner{background:#2a2a1a;border:1px solid #4a4a2a;border-radius:4px;padding:6px 10px;margin:6px 0;font-size:11px;color:var(--orange);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .drought-banner b{color:var(--orange)}
+.combo-bar{display:flex;align-items:center;gap:6px;margin:4px 0 6px 0;padding:4px 8px;background:#151525;border:1px dashed #2a2a3a;border-radius:4px;flex-wrap:wrap;font-size:10px}
+.combo-label{color:#778;margin-right:2px}
+.combo-btn{background:#1a1a2a;color:#aab;border:1px solid #2a2a3a;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px;transition:all .15s}
+.combo-btn:hover{background:#2a2a3a;color:#cce}
+.combo-btn.dao{border-color:#3a2a5a;color:#a78bfa}
+.combo-btn.dao:hover{background:#1a1a2a;color:#c4a5ff}
+.combo-btn.pure{border-color:#4a3a1a;color:#eab308}
+.combo-btn.pure:hover{background:#2a2310;color:#ffc52d}
+.combo-now{color:#556;margin-left:auto;font-size:10px}
+.combo-now.dao{color:#a78bfa}
+.combo-now.pure{color:#eab308}
+.combo-now.mix{color:#e56}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .mon-dot.grace{background:var(--orange);animation:pulse 1s infinite}
 .mon-dot.burst-dot{background:var(--red);animation:pulse .5s infinite}
@@ -6924,15 +7051,44 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
   ${activeHtml}
   ${monitorStatus}
   <div class="mode-bar">
-    <span class="mode-label">模式:</span>
-    <button class="mode-btn${_mode === "wam" ? " wam-on" : ""}" onclick="setWamMode('wam')" title="WAM 多号切换 (账号层)">&#9889; WAM切号</button>
-    <button class="mode-btn${_mode === "official" ? " off-on" : ""}" onclick="setWamMode('official')" title="官方原生登录 (账号层)">&#128273; 官方登录</button>
-    <span class="mode-sep">|</span>
-    <button class="mode-btn${_origin === "invert" ? " org-on" : ""}" onclick="setOrigin('invert')" title="道 Agent · 道德经 SP 注入">&#9775; 道Agent</button>
-    <button class="mode-btn${_origin === "passthrough" || _origin === "off" ? " thr-on" : ""}" onclick="setOrigin('passthrough')" title="官方 Agent · 零改写 (原生 SP)">&#9675; 官方Agent</button>
-    <span class="origin-hint">${_origin === "off" ? "proxy 未启" : `:${_originPort}`}</span>
+    <span class="mode-label">账号:</span>
+    <button class="mode-btn${_mode === "wam" ? " wam-on" : ""}" onclick="setWamMode('wam')" title="WAM 多号切换 (账号层) · 不碰 Agent">&#9889; WAM切号</button>
+    <button class="mode-btn${_mode === "official" ? " off-on" : ""}" onclick="setWamMode('official')" title="官方原生登录 (账号层) · 不碰 Agent · 只停 WAM 引擎">&#128273; 官方登录</button>
+    <span class="mode-sep">&#8214;</span>
+    <span class="mode-label">Agent:</span>
+    <button class="mode-btn${_origin === "invert" ? " org-on" : ""}" onclick="setOrigin('invert')" title="道Agent · 道德经 SP 注入 · 不碰 WAM">&#9775; 道Agent</button>
+    <button class="mode-btn${_origin === "passthrough" || _origin === "off" ? " thr-on" : ""}" onclick="setOrigin('passthrough')" title="官方Agent · 撤锚 + 杀 proxy · 不碰 WAM">&#9675; 官方Agent</button>
+    <span class="origin-hint">${
+      _origin === "invert"
+        ? `注入 :${_originPort}`
+        : _origin === "passthrough"
+          ? `直通 :${_originPort}`
+          : "off"
+    }</span>
   </div>
-  ${_mode === "official" ? '<div class="official-banner"><b>&#128274; 官方模式 · 万法归宗</b><br>WAM会话已登出 · 切号/监测/心跳/文件监听 — 全部已停止<br>请使用 Windsurf 原生登录 · 点击 WAM切号 恢复</div>' : ""}
+  <div class="combo-bar">
+    <span class="combo-label">一键:</span>
+    <button class="combo-btn dao" onclick="setCombo('dao')" title="账号=WAM切号 + Agent=道Agent · 一键到位">&#9775; 道法自然</button>
+    <button class="combo-btn pure" onclick="setCombo('pure')" title="账号=官方登录 + Agent=官方Agent · 一键纯官方 · 双隔离">&#127966;&#65039; 纯官方</button>
+    <span class="combo-now ${(() => {
+      if (_mode === "wam" && _origin === "invert") return "dao";
+      if (
+        _mode === "official" &&
+        (_origin === "passthrough" || _origin === "off")
+      )
+        return "pure";
+      return "mix";
+    })()}">${(() => {
+      if (_mode === "wam" && _origin === "invert") return "当前: 道法自然 ☯";
+      if (
+        _mode === "official" &&
+        (_origin === "passthrough" || _origin === "off")
+      )
+        return "当前: 纯官方 🕊";
+      return `当前: 混合 (${_mode === "wam" ? "WAM" : "官方登录"} + ${_origin === "invert" ? "道Agent" : "官方Agent"})`;
+    })()}</span>
+  </div>
+  ${_mode === "official" ? '<div class="official-banner"><b>&#128274; 官方登录 · 账号层隔离</b><br>WAM 引擎已停 (切号/心跳/文件监听) · 但 Agent 层独立<br>若要彻底纯官方体验 · 点 &#127966;&#65039; 纯官方</div>' : ""}
   ${stats.drought ? `<div class="drought-banner">&#127964;&#65039; <b>Weekly干旱模式</b> 全池W耗尽·仅靠Daily轮换·周重置${stats.hrsToWeekly.toFixed(1)}h后 · <span style="color:var(--green)">不再因W0无效切号</span></div>` : ""}
 </div>
 
@@ -6971,6 +7127,7 @@ const vscode = acquireVsCodeApi();
 function send(type, index) { vscode.postMessage({type, index}); }
 function setWamMode(mode) { vscode.postMessage({type:'setMode', mode}); }
 function setOrigin(mode) { vscode.postMessage({type:'setOrigin', mode}); }
+function setCombo(kind) { vscode.postMessage({type:'setCombo', kind}); }
 function sw(i) { send('switch', i); }
 function cp(i) { vscode.postMessage({type:'copyAccount', index:i}); }
 function rm(i) { send('remove', i); }
@@ -7438,25 +7595,76 @@ function activate(context) {
   // v17.22 · 启动即扫三层残锚 (secret/settings/globalState 内的 127.0.0.1/localhost)
   //         安全网: 用户崩溃/手动卸载 等情形留下的残锚永不再累
   //         幂等: 三层皆净则零操作; 否则静默扫, 不打扰 (太上不知有之)
+  // v17.25 · 二相归一 · 道法自然 · 默认道Agent
+  //   - init 异常不阻断 sweep/auto-ensure (_origin fallback off)
+  //   - sweep 基于 proxy 真活性 (不依赖内存字段)
+  //   - auto-ensure(invert): 用户未主动选官方 · 且 当前非 invert · 则自启
   (async () => {
+    // v17.33 · 自愈 codeium dist/extension.js patch (免 Windsurf 升级/重装丢 patch)
+    //   必先于 OriginCtl.init · 否则 init 时 LS 参数还是旧值
+    try {
+      _origHealCodeiumPatch();
+    } catch (e) {
+      log(`codeium patch heal err: ${(e.message || "").slice(0, 80)}`);
+    }
     try {
       await OriginCtl.init();
-      if (_origin === "off") {
-        const dir = _origFindDir();
-        if (dir) {
-          try {
-            _origAnchorCmd(dir, "restore-all-force", []);
-            log("boot sweep: restore-all-force · done");
-          } catch (e) {
-            // 旧版本 锚.py 无此命令 → 静默跳过 (不报错)
-            log(
-              `boot sweep: restore-all-force 跳过 (${(e.message || "").slice(0, 80)})`,
-            );
-          }
+    } catch (e) {
+      log(`origin init err (fallback off): ${e.message}`);
+      _origin = "off";
+      _originPort = 0;
+      _originPid = 0;
+    }
+    const dir = _origFindDir();
+    // 一. 安全网: proxy 死 → sweep 三层残锚 (幂等, 三层净则零操作)
+    try {
+      const st = await OriginCtl.status();
+      if (!st.alive && dir) {
+        try {
+          _origAnchorCmd(dir, "restore-all-force", []);
+          log("boot sweep: restore-all-force · done (proxy dead)");
+        } catch (e) {
+          log(`boot sweep skip: ${(e.message || "").slice(0, 80)}`);
         }
+      } else if (st.alive) {
+        log(`boot sweep: proxy alive on :${_originPort}, skip sweep`);
       }
     } catch (e) {
-      log(`origin init err: ${e.message}`);
+      log(`boot sweep err: ${(e.message || "").slice(0, 80)}`);
+    }
+    // 二. 道法自然 · 默认道Agent · 用户意愿面前皆空
+    //    触发条件:
+    //      - config.origin.defaultMode 默认 "invert" (用户可在 settings.json 改为 "passthrough")
+    //      - _userIntent !== "passthrough" (用户从未主动选过官方Agent)
+    //      - 当前非 invert (避免重复启)
+    //      - dir 可寻 (否则 activate 会垃弃 err)
+    try {
+      const defaultMode = _cfg("origin.defaultMode", "invert");
+      if (
+        defaultMode === "invert" &&
+        _userIntent !== "passthrough" &&
+        _origin !== "invert" &&
+        dir
+      ) {
+        await OriginCtl.ensure("invert");
+        log("boot auto-ensure: invert · 道法自然 · 用户无感");
+      } else if (
+        // v17.32 · 补漏 · 用户主动选官方Agent 后系统重启 · proxy 自然死 · 若不冷启则 LS :8890/i 指向死端口再回弹
+        _userIntent === "passthrough" &&
+        _origin === "off" &&
+        dir
+      ) {
+        await OriginCtl.ensure("passthrough");
+        log(
+          "boot auto-ensure: passthrough · 用户曾选官方Agent · proxy 冷启透传 · LS :8890/i 保活",
+        );
+      } else {
+        log(
+          `boot auto-ensure skip: default=${defaultMode} intent=${_userIntent} origin=${_origin} dir=${!!dir}`,
+        );
+      }
+    } catch (e) {
+      log(`boot auto-ensure err: ${(e.message || "").slice(0, 120)}`);
     }
   })();
   log(
@@ -8165,27 +8373,216 @@ function activate(context) {
       refreshAll();
     }),
     vscode.commands.registerCommand("wam.originPassthrough", async () => {
-      // v17.22 · 官方Agent 真正撤锚 (不再仅切 proxy 模式 · 与 setOrigin.passthrough 同)
+      // v17.32 · 官方Agent 改走 ensure(passthrough) · proxy 永在位 · SP_MODE 内切 · LS :8890/i 永通 · 消回弹
       try {
-        await OriginCtl.deactivate();
-        vscode.window.showInformationMessage(
-          "WAM 本源: 官方Agent · 撤锚 + 杀 proxy · 请 Reload Window 生效",
-        );
+        const r = await OriginCtl.ensure("passthrough");
+        if (r && r.message)
+          vscode.window.showInformationMessage(`WAM 本源: ${r.message}`);
       } catch (e) {
         vscode.window.showErrorMessage(`WAM 本源 · ${e.message}`);
       }
       refreshAll();
     }),
-    vscode.commands.registerCommand("wam.originOff", async () => {
+    // v17.25 · wam.originOff 命令移除 · 二相归一 · 用户只切 invert ↔ passthrough
+    //         官方Agent 已等同于 deactivate (撚锁 + 杀 proxy) · 无需额外关闭项
+    // v17.33 · wam.verifyEndToEnd · 十层一键自检 · 输出报告到 output channel
+    vscode.commands.registerCommand("wam.verifyEndToEnd", async () => {
+      const out = vscode.window.createOutputChannel("WAM · E2E Verify");
+      out.show(true);
+      out.appendLine(
+        "════════════════════════════════════════════════════════",
+      );
+      out.appendLine("  WAM v" + WAM_VERSION + " · 全链路十层自检");
+      out.appendLine(
+        "════════════════════════════════════════════════════════",
+      );
+      const pass = [],
+        fail = [];
+      const check = (name, ok, detail) => {
+        const mark = ok ? "✓" : "✗";
+        out.appendLine(`  ${mark} [${name}] ${detail || ""}`);
+        (ok ? pass : fail).push(name);
+      };
+      // 层1: codeium dist patch
       try {
-        await OriginCtl.deactivate();
-        vscode.window.showInformationMessage(
-          "WAM 本源: 已关闭 · 请 Reload Window 生效",
+        const r = _origHealCodeiumPatch();
+        check(
+          "L1 · codeium patch",
+          r.ok,
+          r.alreadyPatched
+            ? "已 patch"
+            : r.justPatched
+              ? "即时 patch 完成"
+              : r.reason || "err",
         );
       } catch (e) {
-        vscode.window.showErrorMessage(`WAM 本源 · ${e.message}`);
+        check("L1 · codeium patch", false, e.message);
       }
-      refreshAll();
+      // 层2: proxy 双端口 ping
+      try {
+        const r1 = await _origFetch("GET", "/origin/ping", null, 2000);
+        const alive1 = r1.status === 200 && r1.body && r1.body.ok;
+        check(
+          "L2 · proxy :8889",
+          alive1,
+          alive1
+            ? `uptime=${r1.body.uptime_s}s req=${r1.body.req_total} mode=${r1.body.mode}`
+            : "err",
+        );
+      } catch (e) {
+        check("L2 · proxy :8889", false, e.message);
+      }
+      try {
+        const p8890 = new Promise((resolve) => {
+          const http = require("http");
+          const req = http.request(
+            {
+              host: "127.0.0.1",
+              port: 8890,
+              path: "/origin/ping",
+              method: "GET",
+              timeout: 2000,
+            },
+            (res) => {
+              let d = "";
+              res.on("data", (c) => (d += c));
+              res.on("end", () =>
+                resolve({
+                  status: res.statusCode,
+                  body: (() => {
+                    try {
+                      return JSON.parse(d);
+                    } catch {
+                      return null;
+                    }
+                  })(),
+                }),
+              );
+            },
+          );
+          req.on("error", (e) => resolve({ err: e.message }));
+          req.on("timeout", () => {
+            req.destroy();
+            resolve({ err: "timeout" });
+          });
+          req.end();
+        });
+        const r2 = await p8890;
+        const alive2 = r2.status === 200 && r2.body && r2.body.ok;
+        check(
+          "L3 · proxy :8890",
+          alive2,
+          alive2 ? `uptime=${r2.body.uptime_s}s` : r2.err || "err",
+        );
+      } catch (e) {
+        check("L3 · proxy :8890", false, e.message);
+      }
+      // 层4: SP 注入 selftest
+      try {
+        const r = await _origFetch("GET", "/origin/selftest", null, 5000);
+        const pass4 = r.status === 200 && r.body && r.body.all_paths_pass;
+        check(
+          "L4 · SP 注入 selftest",
+          pass4,
+          pass4
+            ? `dao=${r.body.dao_chars}字 · 3路径皆置换 · leaked=0`
+            : "failed",
+        );
+      } catch (e) {
+        check("L4 · SP 注入 selftest", false, e.message);
+      }
+      // 层5: settings codeium.inferenceApiServerUrl
+      try {
+        const v = vscode.workspace
+          .getConfiguration()
+          .get("codeium.inferenceApiServerUrl");
+        const ok5 = typeof v === "string" && v.indexOf(":8890/i") >= 0;
+        check("L5 · settings inference URL", ok5, (v && String(v)) || "(空)");
+      } catch (e) {
+        check("L5 · settings inference URL", false, e.message);
+      }
+      // 层6: LS 参数 + 活
+      try {
+        const { execSync } = require("child_process");
+        const res = execSync(
+          'wmic process where name="language_server_windows_x64.exe" get processid,commandline /format:csv',
+          { windowsHide: true, timeout: 5000 },
+        ).toString();
+        const has8889 =
+          res.indexOf("--api_server_url http://127.0.0.1:8889") >= 0;
+        const has8890i =
+          res.indexOf("--inference_api_server_url http://127.0.0.1:8890/i") >=
+          0;
+        check(
+          "L6 · LS 参数",
+          has8889 && has8890i,
+          has8889 && has8890i ? "api=:8889 infer=:8890/i" : "参数不全",
+        );
+      } catch (e) {
+        check("L6 · LS 参数", false, (e.message || "").slice(0, 60));
+      }
+      // 层7: origin_state · wam_mode
+      try {
+        const stFile = path.join(WAM_DIR, "origin_state.json");
+        const mdFile = path.join(WAM_DIR, "wam_mode.json");
+        const stOk = fs.existsSync(stFile);
+        const mdOk = fs.existsSync(mdFile);
+        check("L7 · 持久态文件", stOk && mdOk, `state=${stOk} mode=${mdOk}`);
+      } catch (e) {
+        check("L7 · 持久态文件", false, e.message);
+      }
+      // 层8: system proxy auto-detect
+      try {
+        const p = await _origDetectSystemProxy();
+        check("L8 · system proxy 探测", true, p || "(无 · 直连)");
+      } catch (e) {
+        check("L8 · system proxy 探测", false, e.message);
+      }
+      // 层9: hot 目录完整
+      try {
+        const need = ["源.js", "anchor.py", "_dao_81.txt", "VERSION"];
+        const miss = need.filter(
+          (f) => !fs.existsSync(path.join(ORIGIN_EXTRACT_DIR, f)),
+        );
+        check(
+          "L9 · hot 目录",
+          miss.length === 0,
+          miss.length === 0 ? "齐" : `缺: ${miss.join(", ")}`,
+        );
+      } catch (e) {
+        check("L9 · hot 目录", false, e.message);
+      }
+      // 层10: 版本一致
+      try {
+        const v = _origReadVersion(ORIGIN_EXTRACT_DIR);
+        check(
+          "L10 · 版本一致",
+          v === WAM_VERSION,
+          `hot=${v} pkg=${WAM_VERSION}`,
+        );
+      } catch (e) {
+        check("L10 · 版本一致", false, e.message);
+      }
+      out.appendLine("");
+      out.appendLine(
+        "════════════════════════════════════════════════════════",
+      );
+      out.appendLine(
+        `  PASS: ${pass.length}  FAIL: ${fail.length}  TOTAL: ${pass.length + fail.length}`,
+      );
+      if (fail.length) out.appendLine("  失败层: " + fail.join(", "));
+      out.appendLine(
+        "════════════════════════════════════════════════════════",
+      );
+      if (fail.length === 0) {
+        vscode.window.showInformationMessage(
+          `WAM E2E: ${pass.length}/${pass.length} PASS · 全链路通`,
+        );
+      } else {
+        vscode.window.showWarningMessage(
+          `WAM E2E: ${fail.length} 层 FAIL (见输出) · 其余 ${pass.length} 通`,
+        );
+      }
     }),
     vscode.commands.registerCommand("wam.selfTest", async () => {
       vscode.window.showInformationMessage("WAM: 自诊断运行中...");
@@ -8458,8 +8855,123 @@ function _getOriginUpstreamInfer() {
   return _cfg("origin.upstreamInfer", "inference.codeium.com");
 }
 
+// v17.33 · 上游 HTTP CONNECT proxy · 绕 self-serve.windsurf.com ECONNRESET
+//   明配 settings (优先) · 或自动探 127.0.0.1:7890 (v2rayN/Clash 常用)
+//   返 "" = 无 · 否则如 "http://127.0.0.1:7890"
+function _getOriginUpstreamProxy() {
+  const cfg = _cfg("origin.upstreamProxy", "");
+  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
+  return "";
+}
+
+// 同步 TCP 探测 127.0.0.1:port 是否 listen (短超时, 500ms)
+function _origProbePort(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const net = require("net");
+    const sock = new net.Socket();
+    const done = (ok) => {
+      try {
+        sock.destroy();
+      } catch {}
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs || 500);
+    sock.once("connect", () => done(true));
+    sock.once("timeout", () => done(false));
+    sock.once("error", () => done(false));
+    try {
+      sock.connect(port, host);
+    } catch {
+      done(false);
+    }
+  });
+}
+
+// 自动探 system proxy (Clash/v2rayN 常见端口) · 首个 listen 即返
+//   v17.33.1 · 默认不自探 (某些 Clash 不稳 · TLS 干扰) · 明设 autoDetect 才探
+async function _origDetectSystemProxy() {
+  const explicit = _getOriginUpstreamProxy();
+  if (explicit && explicit.toLowerCase() !== "disabled") return explicit;
+  if (explicit && explicit.toLowerCase() === "disabled") return "";
+  // 默认 autoDetect=false · 保直连稳 (v17.32 行为)
+  if (!_cfg("origin.autoDetectProxy", false)) return "";
+  // 常见端口顺序 · 7890=Clash · 10809=v2rayN · 1080=shadowsocks · 8080=http
+  const candidates = [7890, 10809, 1080, 8080, 7891];
+  for (const p of candidates) {
+    if (await _origProbePort("127.0.0.1", p, 400)) {
+      return `http://127.0.0.1:${p}`;
+    }
+  }
+  return "";
+}
+
 function _origLog(msg) {
   log(`[origin] ${msg}`);
+}
+
+// v17.33 · codeium dist/extension.js auto-heal
+//   Windsurf 升级 / 重装 / 恢复 .bak · 皆可能丢 patch · LS 回归官方云 inference
+//   activate 时自动 check · 若原始行还在 (未 patch) · 重打 · 防脆弱
+function _origHealCodeiumPatch() {
+  try {
+    const candidates = [
+      "E:\\Windsurf\\resources\\app\\extensions\\windsurf\\dist\\extension.js",
+      "C:\\Program Files\\Windsurf\\resources\\app\\extensions\\windsurf\\dist\\extension.js",
+      "D:\\Windsurf\\resources\\app\\extensions\\windsurf\\dist\\extension.js",
+    ];
+    let target = null;
+    for (const c of candidates) {
+      if (fs.existsSync(c)) {
+        target = c;
+        break;
+      }
+    }
+    if (!target) {
+      _origLog("heal codeium: target 未找到 (非标准安装路径) · skip");
+      return { ok: false, reason: "target not found" };
+    }
+    const content = fs.readFileSync(target, "utf8");
+    const alreadyPatched = content.indexOf("http://127.0.0.1:8890/i") >= 0;
+    if (alreadyPatched) {
+      return { ok: true, alreadyPatched: true };
+    }
+    // 备份 (仅首次 · 若 .bak 已在则保留)
+    const bak = target + ".bak";
+    if (!fs.existsSync(bak)) {
+      try {
+        fs.copyFileSync(target, bak);
+        _origLog(`heal codeium: backup → ${path.basename(bak)}`);
+      } catch (e) {
+        _origLog(`heal codeium: backup err: ${(e.message || "").slice(0, 80)}`);
+      }
+    }
+    const oldStr =
+      'o.push("--inference_api_server_url",A.inferenceApiServerUrl)';
+    const newStr =
+      'o.push("--inference_api_server_url","http://127.0.0.1:8890/i")';
+    let patched;
+    if (content.indexOf(oldStr) >= 0) {
+      patched = content.replace(oldStr, newStr);
+    } else {
+      // 宽泛 regex · A 可能被 minify 成其他标识符
+      const pattern =
+        /o\.push\("--inference_api_server_url"\s*,\s*[A-Za-z0-9_.]+\)/g;
+      const m = content.match(pattern);
+      if (!m || m.length !== 1) {
+        _origLog(
+          `heal codeium: patch 点找不到 (match=${m ? m.length : 0}) · Windsurf 已升版?`,
+        );
+        return { ok: false, reason: "patch point not found" };
+      }
+      patched = content.replace(m[0], newStr);
+    }
+    fs.writeFileSync(target, patched, "utf8");
+    _origLog(`heal codeium: patched → :8890/i · ${path.basename(target)}`);
+    return { ok: true, justPatched: true };
+  } catch (e) {
+    _origLog(`heal codeium err: ${(e.message || "").slice(0, 120)}`);
+    return { ok: false, reason: (e.message || "").slice(0, 80) };
+  }
 }
 
 // v17.20 · 内嵌本源三件套 (bundled-origin/) + 自解压到 ~/.wam-hot/origin
@@ -8512,12 +9024,25 @@ function _origExtractBundled() {
   }
 }
 
-// ── 路径发现链 (v17.20 · 自解压 + 9 级 fallback · 唯变所适) ──────────
+// ── 路径发现链 (v17.25 · bundled 永远优先 · cache 验 fs 存在 · 失败清) ───
 function _origFindDir() {
   const tryPaths = [];
+  // v17.25 · 真根 · bundled 自解压目录永远第一优先 (随插件走, 不受旧机/SMB/U 盘/跨机缓存影响)
+  if (_origExtractBundled()) tryPaths.push(ORIGIN_EXTRACT_DIR);
+  // cache 次之 · 且必须 fs.existsSync(源.js) 通过 (避免 SMB 死挂/U盘离线旧缓)
   try {
     const j = JSON.parse(fs.readFileSync(ORIGIN_CACHE_FILE, "utf8"));
-    if (j && j.dir) tryPaths.push(j.dir);
+    if (j && j.dir) {
+      if (fs.existsSync(path.join(j.dir, "源.js"))) {
+        tryPaths.push(j.dir);
+      } else {
+        // 缓存指向不可达路径 → 清之 (最常见原因: V:\ SMB 离线 · U 盘拔出 · 用户改名)
+        try {
+          fs.unlinkSync(ORIGIN_CACHE_FILE);
+        } catch {}
+        _origLog(`_origFindDir: cache dir 不可达 (${j.dir}) · 清缓存`);
+      }
+    }
   } catch {}
   if (process.env.WAM_ORIGIN_DIR) tryPaths.push(process.env.WAM_ORIGIN_DIR);
   const ws = vscode.workspace.workspaceFolders;
@@ -8533,8 +9058,7 @@ function _origFindDir() {
       }
     }
   }
-  // v17.20 · 自解压优先: 装过 VSIX 就有 · 任何新机都不空手而归
-  if (_origExtractBundled()) tryPaths.push(ORIGIN_EXTRACT_DIR);
+  // v17.25 · 上方已把 bundled 放到 tryPaths[0], 此处不再重复添加
   const home = os.homedir();
   const abs = [
     path.join(home, ".wam-hot", "origin"),
@@ -8614,15 +9138,22 @@ function _origFindExec(names) {
   return null;
 }
 function _origFindNode() {
+  // v17.26 · 为道日损 · 直用 Electron runtime (process.execPath + ELECTRON_RUN_AS_NODE=1)
+  //   一切 VSCode 即一切 Node · 零外部 Node 安装假设 · 适一切电脑一切用户
+  //   Electron (Windsurf/VSCode/Cursor) 设 ELECTRON_RUN_AS_NODE=1 即退化为纯 Node
   try {
-    const execPath = process.execPath;
-    const resDir = path.dirname(execPath);
-    const cand = [
+    if (process.execPath && fs.existsSync(process.execPath)) {
+      return process.execPath;
+    }
+  } catch {}
+  // fallback · 传统链保底 (execPath 丢/异形 shell)
+  try {
+    const resDir = path.dirname(process.execPath || "");
+    for (const c of [
       path.join(resDir, "node.exe"),
       path.join(resDir, "resources", "app", "node.exe"),
       path.join(resDir, "..", "node.exe"),
-    ];
-    for (const c of cand) {
+    ]) {
       if (fs.existsSync(c)) return c;
     }
   } catch {}
@@ -8707,9 +9238,14 @@ function _origFindFreePort(start) {
 }
 
 // ── 状态持久化 ────────────────────────────────────────────────────────
+// v17.25 · state 扩容 intent 字段 · 读入时同步 _userIntent · 写时落盘
 function _origLoadState() {
   try {
-    return JSON.parse(fs.readFileSync(ORIGIN_STATE_FILE, "utf8"));
+    const s = JSON.parse(fs.readFileSync(ORIGIN_STATE_FILE, "utf8"));
+    if (s && (s.intent === "invert" || s.intent === "passthrough")) {
+      _userIntent = s.intent;
+    }
+    return s;
   } catch {
     return { mode: "off", port: 0, pid: 0 };
   }
@@ -8723,6 +9259,7 @@ function _origSaveState() {
         mode: _origin,
         port: _originPort,
         pid: _originPid,
+        intent: _userIntent,
         ts: Date.now(),
       }),
     );
@@ -8744,14 +9281,24 @@ async function _origSpawnProxy(dir) {
   } catch {}
   const out = fs.openSync(ORIGIN_LOG_FILE, "a");
   const err = fs.openSync(ORIGIN_ERR_FILE, "a");
+  // v17.33 · 探 system HTTP proxy (Clash/v2rayN :7890 等) · 绕 self-serve ECONNRESET
+  const upstreamProxy = await _origDetectSystemProxy();
+  if (upstreamProxy) {
+    _origLog(`spawn: upstream proxy 自探 → ${upstreamProxy}`);
+  }
   const child = _origSpawn(nodeExe, [jsPath], {
     cwd: dir,
     env: {
       ...process.env,
+      // v17.26 · Electron 退化为纯 Node · 消外部 Node 依赖
+      //   当 nodeExe === process.execPath (Windsurf/VSCode) 时本 flag 必设
+      //   当 nodeExe 是真 node.exe 时本 flag 无害 (Node 不识此 env · 无副作用)
+      ELECTRON_RUN_AS_NODE: "1",
       ORIGIN_PORT: String(port),
       ORIGIN_BIND_HOST: _getOriginBindHost(),
       ORIGIN_UPSTREAM_MGMT: _getOriginUpstreamMgmt(),
       ORIGIN_UPSTREAM_INFER: _getOriginUpstreamInfer(),
+      ORIGIN_UPSTREAM_PROXY: upstreamProxy, // v17.33 · 若有 CONNECT tunnel 走之
     },
     detached: true,
     stdio: ["ignore", out, err],
@@ -8853,7 +9400,10 @@ function _origAnchorCmd(dir, subcmd, extraArgs) {
 async function _origAnchorAll(dir, port) {
   const host = _getOriginBindHost();
   const url = `http://${host}:${port}`;
-  const inferUrl = `${url}/i`;
+  // v17.30 · infer URL 用 port+1 · origin 与 api URL 天然不同 · LS binary
+  //          不再 normalize 剥 path → fallback 直连 inference.codeium.com
+  //          proxy 同时 listen port 与 port+1 (源.js ALL_PORTS 默认 [PORT, PORT+1])
+  const inferUrl = `http://${host}:${port + 1}/i`;
   let ok = 0;
   try {
     _origAnchorCmd(dir, "anchor", [url]);
@@ -8910,23 +9460,57 @@ const OriginCtl = {
     return { alive: false };
   },
   async init() {
+    // v17.26 · 反者道之动 · 损"proxy alive 即可信"之盲信
+    // v17.28 · 为道再损 · 损 "kill 全段" 之 111 次 spawnSync powershell 链
+    //   真根②: _origKillByPort × 111 port 阻塞 extension host 事件循环
+    //           VSCode 判"扩展宿主无响应"杀之 · wam.log 自"kill 全段"寂灭
+    //   损法: 只杀已辨之 orphan 之真 (port, pid) · 1 次 spawn, <100ms · 不爆 exthost
+    //   弃: "可能其他端口还有野 proxy" 之担忧 — 用 8889 才冲 · 8900 野 proxy 无害, 不干预
     const s = _origLoadState();
     _origin = s.mode || "off";
     _originPort = s.port || 0;
     _originPid = s.pid || 0;
-    if (_origin !== "off") {
-      const st = await this.status();
-      if (!st.alive) {
-        _origLog(`init: stale state (${_origin}@${_originPort}) → reset off`);
-        _origin = "off";
-        _originPort = 0;
-        _originPid = 0;
-        _origSaveState();
-      } else {
-        _origin = st.mode || _origin;
-        _origLog(`init: resume ${_origin} on :${_originPort} pid=${st.pid}`);
+    const st = await this.status();
+    const _killOrphan = () => {
+      if (st.port) _origKillByPort(st.port);
+      if (st.pid) _origKillPid(st.pid);
+    };
+    if (_origin === "off") {
+      if (st.alive) {
+        // 本实例从未启 proxy · 却发现 :port 活 → 前版本/前实例 orphan
+        _origLog(
+          `init: orphan proxy :${st.port || _getOriginDefaultPort()} pid=${st.pid} (state=off) → kill`,
+        );
+        _killOrphan();
       }
+      return;
     }
+    // _origin !== "off" · 期望有 proxy
+    if (!st.alive) {
+      _origLog(`init: stale state (${_origin}@${_originPort}) → reset off`);
+      _origin = "off";
+      _originPort = 0;
+      _originPid = 0;
+      _origSaveState();
+      return;
+    }
+    // alive · 验 pid 一致 (state.pid 与 ping.pid 异 = orphan 冒充)
+    if (_originPid && st.pid && st.pid !== _originPid) {
+      _origLog(
+        `init: pid 不符 (state=${_originPid} alive=${st.pid}) orphan → kill · reset off`,
+      );
+      _killOrphan();
+      _origin = "off";
+      _originPort = 0;
+      _originPid = 0;
+      _origSaveState();
+      return;
+    }
+    // 真活 · 同步 port/pid/mode (消日志 :0 误 · 真相归一)
+    _origin = st.mode || _origin;
+    _originPort = st.port || _originPort;
+    _originPid = st.pid || _originPid;
+    _origLog(`init: resume ${_origin} on :${_originPort} pid=${_originPid}`);
   },
   async activate(mode) {
     if (mode !== "invert" && mode !== "passthrough")
@@ -8964,65 +9548,64 @@ const OriginCtl = {
       );
     }
     _origin = mode;
+    _userIntent = mode; // v17.25 · 锁定用户意愿
     _origSaveState();
     _origLog(
       `activate mode=${mode} port=${_originPort} anchored=${anchored}/3`,
     );
   },
   // v17.21 · 分冷热 · 唯变所适 · 太上不知有之
-  // 冷路径 (proxy 未活): 需 spawn + anchor + Reload Window
-  // 热路径 (proxy 已活): 纯 HTTP POST /origin/mode · 无 Reload · 用户无感
-  // 官方Agent + off 等价语义: 皆"原生 SP 不改" · 免多余 spawn
+  // v17.26 · 反者道之动 · 损"proxy 活即锚齐"之谬设
+  //   热路径亦必强验三层锚 (anchor.py op_anchor 幂等 · 已锚则直返 · 未锚则补救)
+  //   解决: 外置脚本 restore-all-force 清锚 + proxy 活仍 (orphan 情形) 时发消息回弹
   async ensure(targetMode) {
     if (targetMode !== "invert" && targetMode !== "passthrough")
       throw new Error(`bad mode: ${targetMode}`);
     const st = await this.status();
     const label = targetMode === "invert" ? "道Agent" : "官方Agent";
-    // 1. proxy 未活 + 目标 passthrough: 停留 off (两者皆"零改写") · 零操作
-    if (!st.alive && targetMode === "passthrough") {
-      _origin = "off";
-      _originPort = 0;
-      _originPid = 0;
-      _origSaveState();
-      _origLog(`ensure: ${label} · proxy 未启 · 停留 off (等价零改写)`);
-      return {
-        mode: "off",
-        hot: true,
-        reload: false,
-        message: `${label} · 原生直通 (proxy 未启)`,
-      };
-    }
-    // 2. proxy 已活 + 目标同模式: 幂等 · 零操作
-    if (st.alive && (st.mode || _origin) === targetMode) {
-      _origin = targetMode;
-      _originPort = st.port || _originPort;
-      _originPid = st.pid || _originPid;
-      _origSaveState();
-      return {
-        mode: targetMode,
-        hot: true,
-        reload: false,
-        message: `已是 ${label}`,
-      };
-    }
-    // 3. proxy 已活 + 目标异模式: 热切 (纯 HTTP · 无 Reload · 不重 anchor)
+    // v17.32 · 损 v17.25 "proxy 未活 + passthrough · 停留 off 零操作" 之误设
+    //   原假设: off 与 passthrough 皆"零改写", 故零操作
+    //   但 v17.30 已 patch codeium dist/extension.js 硬编 LS --inference=:8890/i
+    //   若 proxy 死, LS 打 :8890 必死 → chat 回弹 · 此即 179 真根
+    //   今直接走冷路径: spawn proxy + anchor 三层 (mode=passthrough 纯透传) · LS :8890/i 永通
+    // 2. proxy 已活: 先同步 port/pid · 按需切 mode · 再验三层锚
     if (st.alive) {
       _originPort = st.port || _originPort;
       _originPid = st.pid || _originPid;
-      await _origFetch("POST", "/origin/mode", { mode: targetMode });
+      const curMode = st.mode || _origin;
+      const needModeSwitch = curMode !== targetMode;
+      if (needModeSwitch) {
+        await _origFetch("POST", "/origin/mode", { mode: targetMode });
+        _origLog(
+          `ensure hot-swap: ${curMode} → ${targetMode} on :${_originPort}`,
+        );
+      }
+      // v17.26 · invert 目标必锚定本地 · anchor 幂等 · 二次调用零代价
+      //   不再假设"proxy 活即锚齐" · 每次 ensure 强补 · 防外置清锚后回弹
+      if (targetMode === "invert") {
+        const dir = _origFindDir();
+        if (dir) {
+          try {
+            const anchored = await _origAnchorAll(dir, _originPort);
+            _origLog(`ensure: anchor refresh ${anchored}/3 on :${_originPort}`);
+          } catch (e) {
+            _origLog(`ensure anchor err: ${(e.message || "").slice(0, 120)}`);
+          }
+        }
+      }
       _origin = targetMode;
+      _userIntent = targetMode;
       _origSaveState();
-      _origLog(
-        `ensure hot-swap: ${st.mode} → ${targetMode} on :${_originPort}`,
-      );
       return {
         mode: targetMode,
         hot: true,
         reload: false,
-        message: `${label} · 无感热切`,
+        message: needModeSwitch
+          ? `${label} · 无感热切 · 锚已固`
+          : `已是 ${label} · 锚已固`,
       };
     }
-    // 4. 冷路径: spawn + anchor + Reload
+    // 3. 冷路径: spawn + anchor + Reload
     await this.activate(targetMode);
     return {
       mode: targetMode,
@@ -9041,6 +9624,7 @@ const OriginCtl = {
     _origin = "off";
     _originPort = 0;
     _originPid = 0;
+    _userIntent = "passthrough"; // v17.25 · 用户主动选官方Agent · 持久不自启
     _origSaveState();
     _origLog("deactivate · restored + stopped");
   },

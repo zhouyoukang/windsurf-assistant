@@ -58,6 +58,97 @@ const UPSTREAM_INFER =
   process.env.ORIGIN_UPSTREAM_INFER || "inference.codeium.com";
 const CLOUD_PORT = parseInt(process.env.ORIGIN_CLOUD_PORT || "443", 10);
 
+// v17.33 · 上游 HTTP CONNECT proxy (绕 self-serve ECONNRESET · 走 Clash :7890)
+//   env ORIGIN_UPSTREAM_PROXY · 格式 "http://127.0.0.1:7890" (由 extension 自动探注)
+//   空串/undefined = 直连上游 (保 v17.32 及前行为)
+//   纯手写 tunnel · 无 npm 依赖 · 无外部 agent 库
+const UPSTREAM_PROXY = String(process.env.ORIGIN_UPSTREAM_PROXY || "").trim();
+let _upstreamProxyHost = "";
+let _upstreamProxyPort = 0;
+if (UPSTREAM_PROXY) {
+  try {
+    const u = new URL(UPSTREAM_PROXY);
+    _upstreamProxyHost = u.hostname;
+    _upstreamProxyPort = parseInt(u.port || "8080", 10);
+  } catch {}
+}
+function _hasUpstreamProxy() {
+  return !!(_upstreamProxyHost && _upstreamProxyPort);
+}
+
+// 自定义 https Agent · 通过 HTTP CONNECT tunnel 连云
+//   v17.33.0 · bug修: 用 Buffer (非 binary string) · CONNECT 响应后残余字节 unshift 回 stream · 保 TLS handshake 字节齐
+const net = require("net");
+const tls = require("tls");
+const _BOUNDARY = Buffer.from("\r\n\r\n");
+class HttpTunnelAgent extends https.Agent {
+  createConnection(options, cb) {
+    const sock = net.connect(_upstreamProxyPort, _upstreamProxyHost);
+    let buf = Buffer.alloc(0);
+    let called = false;
+    const onErr = (e) => {
+      if (called) return;
+      called = true;
+      try {
+        sock.destroy();
+      } catch {}
+      cb(e);
+    };
+    sock.setTimeout(15000, () => onErr(new Error("proxy connect timeout")));
+    sock.once("connect", () => {
+      try {
+        sock.write(
+          `CONNECT ${options.host}:${options.port} HTTP/1.1\r\n` +
+            `Host: ${options.host}:${options.port}\r\n` +
+            `Proxy-Connection: keep-alive\r\n\r\n`,
+        );
+      } catch (e) {
+        onErr(e);
+      }
+    });
+    const onReadable = () => {
+      while (!called) {
+        const chunk = sock.read(1);
+        if (chunk === null) return; // 等更多数据
+        buf = Buffer.concat([buf, chunk]);
+        const idx = buf.indexOf(_BOUNDARY);
+        if (idx < 0) continue;
+        // 读到 CONNECT 响应末 · 停读
+        sock.removeListener("readable", onReadable);
+        const head = buf.slice(0, idx).toString("utf8");
+        // 此时 buf 恰到 \r\n\r\n 末尾 · socket 剩余 queue 里还有 TLS 字节 · 由 tls.connect 接管
+        if (/^HTTP\/1\.[01] 200/i.test(head)) {
+          sock.setTimeout(0);
+          if (called) return;
+          called = true;
+          const tlsSock = tls.connect(
+            {
+              socket: sock,
+              servername: options.host,
+              ALPNProtocols: ["h2", "http/1.1"],
+            },
+            () => cb(null, tlsSock),
+          );
+          tlsSock.on("error", (e) => {
+            try {
+              sock.destroy();
+            } catch {}
+            log(`tunnel tls err to ${options.host}: ${e.message}`);
+          });
+        } else {
+          onErr(new Error(`CONNECT failed: ${head.split("\r\n")[0]}`));
+        }
+        return;
+      }
+    };
+    sock.on("readable", onReadable);
+    sock.on("error", onErr);
+  }
+}
+const _upstreamAgent = _hasUpstreamProxy()
+  ? new HttpTunnelAgent({ keepAlive: true })
+  : null;
+
 // inference 服务名集 (Connect-RPC 路径的 package.Service 部分)
 const INFERENCE_SERVICES = new Set([
   "exa.language_server_pb.LanguageServerService",
@@ -90,9 +181,29 @@ let SP_MODE = _loadModeFromDisk() || process.env.SP_MODE || "invert";
 const START_TIME = Date.now();
 let reqCounter = 0;
 
+// DAO_DEBUG · hex dump to file (bypass stdout buffering) · default to WAM_DIR
+const _DBG_LOG_DEFAULT = (() => {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || "";
+    if (home) return path.join(home, ".wam-hot", "origin_proxy_dbg.log");
+  } catch {}
+  return "";
+})();
+const _DBG_LOG = process.env.ORIGIN_DBG_LOG || _DBG_LOG_DEFAULT;
 function log(...args) {
   const t = new Date().toISOString().replace("T", " ").slice(0, 19);
   console.log(`[${t}]`, ...args);
+  if (_DBG_LOG) {
+    try {
+      const line =
+        `[${t}] ` +
+        args
+          .map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a)))
+          .join(" ") +
+        "\n";
+      fs.appendFileSync(_DBG_LOG, line);
+    } catch {}
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -695,9 +806,12 @@ function proxyToCloud(req, res, overrideBody, rid) {
     path: route.path,
     headers,
   };
+  // v17.33 · 若有 upstream HTTP proxy · 走 CONNECT tunnel (绕 self-serve ECONNRESET)
+  if (_upstreamAgent) opts.agent = _upstreamAgent;
 
   const tag = rid != null ? `#${rid} ` : "";
   const tStart = Date.now();
+  const viaTag = _upstreamAgent ? ` via :${_upstreamProxyPort}` : "";
 
   const upReq = https.request(opts, (upRes) => {
     // 日志: 上游响应状态 / content-type / HTTP 版本 — 诊断 Cascade "回弹" 之关键证
@@ -705,7 +819,7 @@ function proxyToCloud(req, res, overrideBody, rid) {
     const ce = upRes.headers["content-encoding"] || "-";
     const ver = upRes.httpVersion || "1.1";
     log(
-      `${tag}UP ${route.host} ${req.method} ${route.path.slice(0, 90)} → ${upRes.statusCode} ct=${ct} ce=${ce} http/${ver} ${Date.now() - tStart}ms`,
+      `${tag}UP ${route.host}${viaTag} ${req.method} ${route.path.slice(0, 90)} → ${upRes.statusCode} ct=${ct} ce=${ce} http/${ver} ${Date.now() - tStart}ms`,
     );
     // 流式响应先写 head, 再 pipe body, 结束前补 trailer (Connect-RPC / gRPC streaming 必需)
     res.writeHead(upRes.statusCode, upRes.headers);
@@ -771,6 +885,24 @@ const server = http.createServer(async (req, res) => {
     }
     // 3. 需改 SP 的请求: 读 body → 改 → 转发
     const body = await readBody(req);
+    // DAO_DEBUG · chat body hex dump (前 80B + 尾 32B) + headers 快照 · 只为诊断 5B 空帧真源
+    try {
+      const bh = body.slice(0, Math.min(80, body.length)).toString("hex");
+      const bt =
+        body.length > 112 ? body.slice(body.length - 32).toString("hex") : "";
+      const hlist = [];
+      for (const k of Object.keys(req.headers)) {
+        let v = req.headers[k];
+        if (typeof v === "string" && v.length > 80) v = v.slice(0, 80) + "...";
+        hlist.push(k + "=" + v);
+      }
+      log(
+        `#${rid} ${kind} DUMP len=${body.length} head=${bh}${bt ? " tail=" + bt : ""}`,
+      );
+      log(`#${rid} ${kind} HDRS ${hlist.join(" | ").slice(0, 400)}`);
+    } catch (e) {
+      log(`#${rid} ${kind} DUMP err: ${e.message}`);
+    }
     let modified = body;
     try {
       modified =
@@ -808,25 +940,70 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.on("listening", () => {
-  log("═══════════════════════════════════════════════════════");
-  log(` 本源 Origin @ :${PORT}`);
-  log(` mgmt   → https://${UPSTREAM_MGMT}`);
-  log(` infer  → https://${UPSTREAM_INFER}`);
-  log(` mode=${SP_MODE} · pid=${process.pid}`);
-  log(` 道德经 chars=${DAO_DE_JING_81.length}`);
-  log(` 控制面: http://${BIND_HOST}:${PORT}/origin/ping`);
-  log("═══════════════════════════════════════════════════════");
-});
-
 server.on("error", (e) => {
   log("server err:", e.message);
   process.exit(1);
 });
 
-// --test 跳 listen, 便于 require 做单元验证
+// v17.30 · 多端口监听 (同一 handler 复用)
+// LS binary 对 --api_server_url 与 --inference_api_server_url 做 origin 比对,
+// 若两 URL origin 相同 (仅 path 不同) 仍判 "未配 inference" → fallback 直连 inference.codeium.com.
+// 解: 让 mgmt 与 infer 走不同端口 (origin 天然不同) · 同 handler · 同分流逻辑.
+// ORIGIN_PORTS 逗号分隔 · 例: "8889,8890" · 默认 "PORT,PORT+1"
+const ALL_PORTS = (() => {
+  const env = process.env.ORIGIN_PORTS;
+  if (env) {
+    return env
+      .split(",")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => !isNaN(n) && n > 0);
+  }
+  return [PORT, PORT + 1]; // 默认双端口: 主端口 + 主+1
+})();
+
+const _extraServers = [];
+function _mkServer(handler) {
+  return http.createServer(handler);
+}
+
+// 主 server 已绑 handler; 额外端口用相同 handler 创建附加 server
+const _mainHandler = server.listeners("request")[0];
+
+server.on("listening", () => {
+  const addr = server.address();
+  log(`listen :${addr && addr.port} (main)`);
+});
+
 if (!process.argv.includes("--test")) {
-  server.listen(PORT, BIND_HOST);
+  const primary = ALL_PORTS[0] ?? PORT;
+  server.listen(primary, BIND_HOST);
+  // 其余端口用相同 handler, 同 process 内多监听
+  for (let i = 1; i < ALL_PORTS.length; i++) {
+    const p = ALL_PORTS[i];
+    const s = _mkServer(_mainHandler);
+    s.on("listening", () => log(`listen :${p} (extra)`));
+    s.on("error", (e) => log(`extra server :${p} err: ${e.message}`));
+    s.listen(p, BIND_HOST);
+    _extraServers.push(s);
+  }
+  // 总体启动信息 (仅打一次, 主 server listening 后)
+  server.once("listening", () => {
+    log("═══════════════════════════════════════════════════════");
+    log(` 本源 Origin @ :${ALL_PORTS.join(",")} (${ALL_PORTS.length} ports)`);
+    log(` mgmt   → https://${UPSTREAM_MGMT}`);
+    log(` infer  → https://${UPSTREAM_INFER}`);
+    if (_hasUpstreamProxy()) {
+      log(
+        ` upstream proxy: http://${_upstreamProxyHost}:${_upstreamProxyPort} (CONNECT tunnel)`,
+      );
+    } else {
+      log(` upstream proxy: (direct · 无)`);
+    }
+    log(` mode=${SP_MODE} · pid=${process.pid}`);
+    log(` 道德经 chars=${DAO_DE_JING_81.length}`);
+    log(` 控制面: http://${BIND_HOST}:${primary}/origin/ping`);
+    log("═══════════════════════════════════════════════════════");
+  });
 }
 
 process.on("uncaughtException", (e) =>
