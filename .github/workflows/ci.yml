@@ -1,0 +1,33 @@
+name: CI · E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/**'
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e-wam:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: E2E · packages/wam
+        run: node packages/wam/_wam_e2e.js packages/wam
+
+      - name: Build VSIX
+        run: node scripts/build-vsix.js wam
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: wam-vsix
+          path: packages/wam/*.vsix
+          retention-days: 30

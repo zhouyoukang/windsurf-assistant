@@ -1,0 +1,16 @@
+{
+  "name": "wam-proxy",
+  "displayName": "WAM Proxy · 切号 + 反代中继",
+  "description": "WAM account switching + local proxy relay with Dao Agent SP injection",
+  "version": "0.1.0",
+  "publisher": "devaid",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {}
+}

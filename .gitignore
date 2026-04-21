@@ -1,17 +1,4 @@
-# Windsurf Assistant · 道法自然 · 扁平根 · 仅留本源
-
-# ═══ 本地研发目录 (非 VSIX 所需 · 不入库) ═══
-cloud-pool/
-diagnostics/
-engine/
-monitor/
-pipeline/
-pool-admin/
-research/
-scripts/
-tools/
-dist/
-wam-bundle/
+# windsurf-assistant monorepo · 道法自然
 
 # ═══ 账号池数据 · 绝不入库 ═══
 *.auth_blob
@@ -33,17 +20,10 @@ secrets.env
 # ═══ 构建产物 ═══
 *.vsix
 node_modules/
+dist/
 
 # ═══ 临时与日志 ═══
 *.log
 *.bak
 __pycache__/
-
-# ═══ 本地映射 · vsce 元数据 ═══
-LOCAL_MAPPING.md
 .vsixmanifest
-
-# ═══ 但 VSIX 必需资源要入库 ═══
-!extension.js
-!media/
-!media/**
