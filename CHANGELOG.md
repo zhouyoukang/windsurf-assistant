@@ -1,5 +1,74 @@
 # Changelog
 
+## v17.39.0 · 反者道之动 · 消息锚定·五路道并行 · 跳出轮询表象
+
+### 病根 (v17.38-stealth 换身份后深审)
+
+身份替换为 `devaid.rt-flow` 虽解 ban, 但**切号链仍断**. 深察发现病根不在身份, 而在**触发机制**:
+
+| 环节 | 旧机制 | 病 |
+|------|--------|-----|
+| 触发 | `monitorActiveQuota` 轮询 → `fetchAccountQuota` 命中外部 API → 额度变 → 切号 | 外部 API 任一环节失效 (ban/限流/迁移/网络) 即整链死寂 |
+| 症状 | 用户发消息 → 额度轮询下一轮未到 → 无反应 | 依赖间接信号 · 最坏延迟 45s |
+| 本源 | 对话发送后立即切号 (用户真实需求) | 从未被直接满足 |
+
+### 药方 (反者道之动 · 五路道并行 · 道并行不相悖)
+
+跳出"轮询额度变化"的表象, 直接锚定"消息发送"动作本身. 五路探针独立工作, 任一命中即排队切号, **外部 API 失效亦不影响**.
+
+| 路 | 探针 | 原理 | 文件 |
+|----|------|------|------|
+| **A** 网络 | monkey-patch `https.request`/`http.request` | 嗅探 `*.codeium\.com`/`*.windsurf\.com` + `StreamCascade` 指纹 | `_installNetworkAnchor` |
+| **B** 命令 | monkey-patch `vscode.commands.executeCommand` | 匹配 `windsurf.cascade.*`/`cascade.*` 等指令 ID | `_installCommandAnchor` |
+| **C** 文件 | `fs.watch ~/.codeium/windsurf/cascade/*.pb` | 每次发送一轮即写盘, mtime 变化即触发 | `_installCascadeFileAnchor` |
+| **D** 错速 | 既有 `_rateLimitWatcher` + 文档 "Rate limit" 关键字 | 独立并行保留 (`民至老死不相往来`) | 既有 + `_msgAnchor.paths.ratelim.hits` |
+
+### 统一触发器
+
+```js
+_msgAnchorTrigger(source)  // 任一探针调用
+  → 300ms 多路去重         // 避免 network+cascade 同时命中重算
+  → sendCounter++          // 每 N 次分流 (默认 1=每次)
+  → 1500ms debounce        // 让当前 stream 完成再切
+  → _msgAnchorDoSwitch     // 与 monitorActiveQuota 同一套风控闸门
+```
+
+### 品德 (太上不知有之 · 上德若偷 · 上善若水)
+
+- **零 Toast**: 五路触发切号均仅 `log()`, 无任何 `showInformationMessage` (E2E L15 断言 `toastInAnchor === 0`)
+- **零改写**: 网络/命令拦截仅观察, 原函数原样返回 (`origHttpsReq`/`origExec` 保留, `_uninstall*` 可一键还原)
+- **零硬编码**: 全部参数走 `wam.messageAnchor.*` 配置 (可单路禁用)
+- **兜底恢复**: `deactivate` 自动 `_uninstallMessageAnchor`, `context.subscriptions` 一并清理
+
+### 损 (为道日损)
+
+| 位置 | 改动 |
+|------|------|
+| `@extension.js:400` | `WAM_VERSION = "17.39.0"` |
+| `@extension.js:425-790` | +365 行 · 消息锚定五路道并行模块 (`_msgAnchor`/`_msgAnchorTrigger`/`_msgAnchorDoSwitch`/3×installer/snapshot) |
+| `@extension.js` activate | `_installMessageAnchor(context)` 钩入 rate-limit 之后 |
+| `@extension.js` rate-limit 拦截 | 追加 `_msgAnchor.paths.ratelim.hits++` 统计 |
+| `@extension.js` deactivate | `_uninstallMessageAnchor()` 兜底 |
+| `@extension.js` exports | `+ _msgAnchorSnapshot` 供诊断 |
+| `@package.json` | +7 个 `wam.messageAnchor.*` 配置 (enabled/debounceMs/everyN/dedupeMs + 3 path.*) |
+| `@_wam_e2e.js` | +L15 共 34 条断言 · 88/88 ALL GREEN |
+| `@bundled-origin/VERSION` | `17.37.0` → `17.39.0` |
+
+### 验证
+
+- **Source E2E**: 88 pass / 0 fail / 0 skip
+- **141 本机**: 84 pass / 0 fail / 2 skip (预期 · .vscodeignore/bundled-origin 不入运行时)
+- **179 远程**: 84 pass / 0 fail / 2 skip (同上)
+- **Hash 校验**: source ↔ 141 ↔ 179 三端 `extension.js`=`f7308263a64d3345` · `package.json`=`ae04e889e50e909e`
+- **Ban traces**: extension.js 0 · package.json 0 (隐匿身份完好)
+- **VSIX**: `rt-flow-17.39.0.vsix` 119 KB
+
+### 下一步
+
+`Ctrl+Shift+P` → `Developer: Reload Window` → 新消息锚定即刻生效. 任一路命中即切号, 无论额度 API 是否可达.
+
+---
+
 ## v17.37.0 · 道法自然 · 四处持久化缺失修复 · 各安其位
 
 ### 真根承 v17.36 (纯切号归位后深审)

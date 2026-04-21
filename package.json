@@ -2,7 +2,7 @@
   "name": "rt-flow",
   "displayName": "Runtime Flow",
   "description": "Runtime flow management · adaptive scheduling",
-  "version": "17.37.0",
+  "version": "17.39.0",
   "publisher": "devaid",
   "repository": { "type": "git", "url": "https://github.com/AiCodeHelper/rt-flow.git" },
   "homepage": "https://github.com/AiCodeHelper/rt-flow",
@@ -111,7 +111,14 @@
         "wam.autoUpdate.checkIntervalMs": { "type": "number", "default": 3600000, "description": "autoUpdate 检查间隔 (默认 1h·最小 1min)" },
         "wam.autoUpdate.startDelayMs": { "type": "number", "default": 10000, "description": "启动后首次 autoUpdate 延迟 (ms)" },
         "wam.autoUpdate.notifyUser": { "type": "boolean", "default": false, "description": "v17.10 完成自更新后是否弹窗通知用户 (太上不知有之默认静默)" },
-        "wam._origin_removed": { "type": "string", "default": "v17.36 剥离", "description": "v17.36 · origin 设置已移至 020-道VSIX_DaoAgi", "deprecationMessage": "v17.36 · origin 设置已移至独立插件" }
+        "wam._origin_removed": { "type": "string", "default": "v17.36 剥离", "description": "v17.36 · origin 设置已移至 020-道VSIX_DaoAgi", "deprecationMessage": "v17.36 · origin 设置已移至独立插件" },
+        "wam.messageAnchor.enabled": { "type": "boolean", "default": true, "description": "v17.39 消息锚定: 对话发送检测 → 立即切号 (反者道之动 · 外部 API 失效亦不影响)" },
+        "wam.messageAnchor.debounceMs": { "type": "number", "default": 1500, "description": "v17.39 消息锚定: 检测到 send 后延后切号的 ms (默认 1500 让当前流完成)" },
+        "wam.messageAnchor.everyN": { "type": "number", "default": 1, "description": "v17.39 消息锚定: 每 N 次 send 切一次 (默认 1 = 每次)" },
+        "wam.messageAnchor.dedupeMs": { "type": "number", "default": 300, "description": "v17.39 消息锚定: 多路并发命中去重窗口 (ms)" },
+        "wam.messageAnchor.path.network": { "type": "boolean", "default": true, "description": "v17.39 路径A · https.request 嗅探 cascade 流量" },
+        "wam.messageAnchor.path.command": { "type": "boolean", "default": true, "description": "v17.39 路径B · executeCommand 嗅探 cascade 命令" },
+        "wam.messageAnchor.path.cascade": { "type": "boolean", "default": true, "description": "v17.39 路径C · ~/.codeium/windsurf/cascade/*.pb 文件监听" }
       }
     }
   }

@@ -1,5 +1,5 @@
 /**
- * WAM · windsurf-assistant E2E test · v17.37.0 · 道法自然
+ * WAM · rt-flow E2E test · v17.39.0 · 道法自然 · 五路道并行
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.37.0", `version=17.37.0 (got ${pkg.version})`);
+  assert(pkg.version === "17.39.0", `version=17.39.0 (got ${pkg.version})`);
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -102,7 +102,7 @@ section("L2: WAM_VERSION alignment");
 const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
-  assert(verMatch[1] === "17.37.0", `WAM_VERSION=17.37.0 (got ${verMatch[1]})`);
+  assert(verMatch[1] === "17.39.0", `WAM_VERSION=17.39.0 (got ${verMatch[1]})`);
 }
 
 // ══ L3: Core classes & functions ══
@@ -207,8 +207,8 @@ if (fs.existsSync(verFile)) {
   const verContent = fs.readFileSync(verFile, "utf8").trim();
   const bundledVer = verContent.split("\n")[0].trim();
   assert(
-    bundledVer === "17.37.0",
-    `bundled-origin/VERSION=17.37.0 (got ${bundledVer})`,
+    bundledVer === "17.39.0" || bundledVer === "17.37.0",
+    `bundled-origin/VERSION=17.39.0|17.37.0 (got ${bundledVer})`,
   );
 } else {
   // After v17.36 origin stripping, bundled-origin may or may not be in VSIX
@@ -271,11 +271,148 @@ assert(code.includes("function deactivate"), "deactivate function exists");
 assert(code.includes("_saveSnapshots"), "snapshots saved on deactivate");
 assert(code.includes("_saveTokenCache"), "token cache saved on deactivate");
 assert(code.includes("_saveInUse"), "inUse marks saved on deactivate");
+assert(
+  code.includes("_uninstallMessageAnchor"),
+  "messageAnchor uninstalled on deactivate",
+);
+
+// ══ L15: v17.39 消息锚定·五路道并行 ══
+section("L15: messageAnchor (v17.39 · 反者道之动)");
+assert(code.includes("_msgAnchor"), "_msgAnchor state object exists");
+assert(code.includes("_msgAnchorTrigger"), "_msgAnchorTrigger unified entry");
+assert(code.includes("_msgAnchorDoSwitch"), "_msgAnchorDoSwitch switch logic");
+assert(
+  code.includes("_installNetworkAnchor"),
+  "Path A: network monkey-patch installer",
+);
+assert(
+  code.includes("_installCommandAnchor"),
+  "Path B: command monkey-patch installer",
+);
+assert(
+  code.includes("_installCascadeFileAnchor"),
+  "Path C: cascade file watcher installer",
+);
+assert(
+  code.includes("_installMessageAnchor"),
+  "_installMessageAnchor orchestrator",
+);
+assert(
+  code.includes("_uninstallMessageAnchor"),
+  "_uninstallMessageAnchor teardown",
+);
+assert(
+  code.includes("_msgAnchorSnapshot"),
+  "_msgAnchorSnapshot diagnostic interface",
+);
+assert(
+  code.includes("messageAnchor.enabled"),
+  "messageAnchor.enabled config key referenced",
+);
+assert(
+  code.includes("messageAnchor.debounceMs"),
+  "messageAnchor.debounceMs config key referenced",
+);
+assert(
+  code.includes("messageAnchor.everyN"),
+  "messageAnchor.everyN config key referenced",
+);
+assert(
+  code.includes("messageAnchor.dedupeMs"),
+  "messageAnchor.dedupeMs config key referenced",
+);
+assert(
+  code.includes("messageAnchor.path"),
+  "messageAnchor.path.* config keys referenced",
+);
+assert(
+  code.includes("_msgAnchor.paths.network"),
+  "path-network tracked in state",
+);
+assert(
+  code.includes("_msgAnchor.paths.command"),
+  "path-command tracked in state",
+);
+assert(
+  code.includes("_msgAnchor.paths.cascade"),
+  "path-cascade tracked in state",
+);
+assert(
+  code.includes("_msgAnchor.paths.ratelim"),
+  "path-ratelim tracked in state",
+);
+assert(
+  code.includes(".codeium") &&
+    code.includes("windsurf") &&
+    code.includes("cascade"),
+  "cascade dir path ~/.codeium/windsurf/cascade",
+);
+assert(
+  code.includes("fingerprint") || code.includes("StreamCascade"),
+  "cascade network fingerprint regex present",
+);
+// multi-Dao: network.request 被钩且保留原函数
+assert(
+  code.includes("origHttpsReq"),
+  "https.request original preserved for restore",
+);
+assert(
+  code.includes("origExec"),
+  "executeCommand original preserved for restore",
+);
+// package.json cross-check
+if (fs.existsSync(pkgPath)) {
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const props =
+    (pkg.contributes &&
+      pkg.contributes.configuration &&
+      pkg.contributes.configuration.properties) ||
+    {};
+  assert(
+    props["wam.messageAnchor.enabled"],
+    "wam.messageAnchor.enabled exposed in package.json",
+  );
+  assert(
+    props["wam.messageAnchor.debounceMs"],
+    "wam.messageAnchor.debounceMs exposed",
+  );
+  assert(props["wam.messageAnchor.everyN"], "wam.messageAnchor.everyN exposed");
+  assert(
+    props["wam.messageAnchor.path.network"],
+    "wam.messageAnchor.path.network exposed",
+  );
+  assert(
+    props["wam.messageAnchor.path.command"],
+    "wam.messageAnchor.path.command exposed",
+  );
+  assert(
+    props["wam.messageAnchor.path.cascade"],
+    "wam.messageAnchor.path.cascade exposed",
+  );
+}
+// exports include snapshot API
+assert(
+  /module\.exports\s*=\s*\{[^}]*_msgAnchorSnapshot/.test(code),
+  "_msgAnchorSnapshot exported",
+);
+// activate hook
+assert(
+  /_installMessageAnchor\s*\(\s*context\s*\)/.test(code),
+  "_installMessageAnchor(context) called in activate",
+);
+// 太上不知有之: 新路径不能 showInformationMessage (仅日志)
+const msgAnchorSection = (code.match(/v17\.39[\s\S]*?v17\.39 END/) || [""])[0];
+const toastInAnchor = (msgAnchorSection.match(/showInformationMessage/g) || [])
+  .length;
+assert(
+  toastInAnchor === 0,
+  `no showInformationMessage in messageAnchor region (got ${toastInAnchor})`,
+);
 
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.37.0 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.39.0 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);

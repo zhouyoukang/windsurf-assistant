@@ -397,7 +397,7 @@ const RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 const RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.37.0"; // v17.37.0: 道法自然 · 四处持久化缺失修复 · _saveStore→_store.save · doAutoRotate/panicSwitch/switchAccount 落盘补全
+const WAM_VERSION = "17.39.0"; // v17.39.0: 反者道之动 · 消息锚定·五路道并行 · 跳出额度轮询表象 · 直触 cascade send 立即切号 (太上不知有之 · 上德若偷)
 
 let _store = null;
 let _sidebarProvider = null;
@@ -421,6 +421,373 @@ let _mode = "wam"; // 'wam' = 切号模式 | 'official' = 官方登录模式
 const MODE_FILE = path.join(WAM_DIR, "wam_mode.json");
 
 // v17.36 · 反者道之动 · proxy/origin 状态变量已剥离 · WAM 纯切号
+
+// ════════════════════════════════════════════════════════════════════════
+// v17.39 · 消息锚定 · 五路道并行 · 反者道之动 · 太上不知有之
+// ────────────────────────────────────────────────────────────────────────
+// 病根: monitorActiveQuota 依赖 fetchAccountQuota 成功 → 外部 API 被 ban/限流
+//       即等于切号链断 · 用户发消息后毫无反应
+// 药方: 跳出"轮询额度变化"的表象 · 直接锚定"消息发送"动作本身
+//       多路探针独立工作 · 任一命中即直接排队一次切号 · 零外部依赖
+//       道并行而不相悖 · 鸡犬相闻民至老死不相往来 — 各路互不通信各自为战
+// 路径:
+//   A · 网络层: monkey-patch https.request, 嗅探 codeium/windsurf cascade 流量
+//   B · 命令层: monkey-patch vscode.commands.executeCommand, 嗅探 cascade 命令
+//   C · 文件层: ~/.codeium/windsurf/cascade/*.pb mtime 变化 (发送即写盘)
+//   D · 错误层: 既有 _rateLimitWatcher · 独立平行保留
+// 品德: 太上不知有之 — 零 Toast · 日志独白 · 切号延 1.5s 让流完成再切
+// ════════════════════════════════════════════════════════════════════════
+const _msgAnchor = {
+  lastSendTs: 0, // 最后一次任意路径检测到的 send (用于多路去重)
+  sendCounter: 0, // 累计 send 次数 (用于 everyN 分流)
+  lastSwitchTriggerTs: 0, // 最后一次排队切号时间 (用于 cooldown 日志)
+  debounceTimer: null,
+  paths: {
+    network: {
+      active: false,
+      hits: 0,
+      last: 0,
+      origHttpsReq: null,
+      origHttpReq: null,
+    },
+    command: { active: false, hits: 0, last: 0, origExec: null },
+    cascade: { active: false, hits: 0, last: 0, watcher: null, dir: "" },
+    ratelim: { active: false, hits: 0, last: 0 }, // 既有 _rateLimitWatcher · 仅统计
+  },
+};
+
+function _getMsgAnchorEnabled() {
+  return _cfg("messageAnchor.enabled", true); // 默认启用 · 太上不知有之
+}
+function _getMsgAnchorDebounceMs() {
+  // send 检测到后延后多少 ms 再切号 (让当前 stream 完成)
+  return _cfg("messageAnchor.debounceMs", 1500);
+}
+function _getMsgAnchorEveryN() {
+  return _cfg("messageAnchor.everyN", 1); // 每 N 次 send 切一次 (1=每次)
+}
+function _getMsgAnchorDedupeMs() {
+  // 多路并发命中去重窗口 (ms)
+  return _cfg("messageAnchor.dedupeMs", 300);
+}
+function _getMsgAnchorPathEnabled(p) {
+  // 允许运维单独关路 (默认全开)
+  return _cfg(`messageAnchor.path.${p}`, true);
+}
+
+// 统一触发入口: 任一探针调用此函数
+function _msgAnchorTrigger(source) {
+  if (!_getMsgAnchorEnabled()) return;
+  const now = Date.now();
+  const p = _msgAnchor.paths[source];
+  if (p) {
+    p.hits++;
+    p.last = now;
+  }
+  // 多路并发命中去重 · 窗口内仅算一次
+  if (now - _msgAnchor.lastSendTs < _getMsgAnchorDedupeMs()) return;
+  _msgAnchor.lastSendTs = now;
+  _msgAnchor.sendCounter++;
+  const everyN = Math.max(1, _getMsgAnchorEveryN());
+  log(
+    `📬 msgAnchor[${source}] send#${_msgAnchor.sendCounter} | N${_msgAnchor.paths.network.hits} C${_msgAnchor.paths.command.hits} F${_msgAnchor.paths.cascade.hits} R${_msgAnchor.paths.ratelim.hits}`,
+  );
+  if (_msgAnchor.sendCounter % everyN !== 0) return; // N 轮切一次
+  if (_msgAnchor.debounceTimer) clearTimeout(_msgAnchor.debounceTimer);
+  _msgAnchor.debounceTimer = setTimeout(() => {
+    _msgAnchor.debounceTimer = null;
+    _msgAnchorDoSwitch(source).catch((e) =>
+      log(`msgAnchor[${source}] switch err: ${e.message}`),
+    );
+  }, _getMsgAnchorDebounceMs());
+}
+
+async function _msgAnchorDoSwitch(source) {
+  // 闸门 (与 monitorActiveQuota 同一套风控)
+  if (!_store || !isWamMode()) return;
+  if (_switching) {
+    log(`msgAnchor[${source}]: 切号中, 跳过`);
+    return;
+  }
+  const autoRotate = vscode.workspace
+    .getConfiguration("wam")
+    .get("autoRotate", true);
+  if (!autoRotate) return;
+  const sinceLast = Date.now() - _lastSwitchTime;
+  if (sinceLast < _getSwitchCooldownMs()) {
+    log(
+      `msgAnchor[${source}]: 切号冷却 ${Math.round(sinceLast / 1000)}s/${_getSwitchCooldownMs() / 1000}s, 跳过`,
+    );
+    return;
+  }
+  const injectCd = Date.now() - _lastInjectFail < _getInjectFailCooldown();
+  if (injectCd) {
+    log(`msgAnchor[${source}]: 注入失败冷却中, 跳过`);
+    return;
+  }
+  const activeI = _store.activeIndex;
+  const activeAcc = activeI >= 0 ? _store.get(activeI) : null;
+  if (activeAcc?.skipAutoSwitch) {
+    log(`msgAnchor[${source}]: 活跃账号已锁定, 跳过`);
+    return;
+  }
+  let bestI =
+    _predictiveCandidate >= 0
+      ? _predictiveCandidate
+      : _store.getBestIndex(activeI, true);
+  if (bestI < 0) {
+    log(`msgAnchor[${source}]: 无可用账号`);
+    return;
+  }
+  let bestAcc = _store.get(bestI);
+  log(
+    `⚡ msgAnchor[${source}] → ${bestAcc.email.substring(0, 25)}${_predictiveCandidate >= 0 ? " [预判]" : ""}`,
+  );
+  _switching = true;
+  _switchingStartTime = Date.now();
+  _msgAnchor.lastSwitchTriggerTs = Date.now();
+  try {
+    let ok = false;
+    for (let r = 0; r < 3 && !ok; r++) {
+      if (r > 0) {
+        bestI = _store.getBestIndex(activeI, true);
+        if (bestI < 0) break;
+        bestAcc = _store.get(bestI);
+        log(`  msgAnchor retry#${r}: → ${bestAcc.email.substring(0, 25)}`);
+      }
+      const sr = await switchToAccount(bestAcc.email, bestAcc.password);
+      if (sr.ok) {
+        _store.activeIndex = bestI;
+        _store.switchCount++;
+        _lastSwitchTime = Date.now();
+        _store.save();
+        _quotaSnapshots.delete(bestAcc.email.toLowerCase());
+        _snapshotDirty = true;
+        _schedulePersist();
+        _predictiveCandidate = _store.getBestIndex(bestI, true);
+        if (_predictiveCandidate >= 0)
+          _prewarmCandidateToken(_predictiveCandidate);
+        _burstUntil = Date.now() + _getBurstDuration();
+        updateStatusBar();
+        refreshAll();
+        // 太上不知有之: 零 Toast · 日志独白
+        log(`  ✅ msgAnchor[${source}] OK ${sr.account} [${sr.ms}ms]`);
+        ok = true;
+      } else if (sr.error && /登录失败/.test(sr.error)) {
+        continue;
+      } else {
+        if (r < 2) {
+          await new Promise((s) => setTimeout(s, _getSwitchRetryDelayMs()));
+          continue;
+        }
+        _lastInjectFail = Date.now();
+        _predictiveCandidate = -1;
+        log(`  ❌ msgAnchor[${source}] FAIL: ${sr.error}`);
+        break;
+      }
+    }
+  } finally {
+    _switching = false;
+  }
+}
+
+// ── Path A · 网络拦截 (monkey-patch https.request / http.request) ──
+// 上善若水: 非侵入观察 · 仅嗅探不改写 · 任何异常直接 fall-through 原函数
+function _installNetworkAnchor() {
+  if (_msgAnchor.paths.network.active) return false;
+  if (!_getMsgAnchorPathEnabled("network")) return false;
+  const st = _msgAnchor.paths.network;
+  try {
+    st.origHttpsReq = https.request;
+    st.origHttpReq = http.request;
+    const fingerprint = /codeium\.com|windsurf\.com|exafunction/i;
+    const pathHit =
+      /Stream(Cascade|Chat|Turn)|Cascade(Request|Turn|Chat)|SubmitUser|SendMessage|PushTurn|RunTurn|\/chat\//i;
+    const hook = (orig) =>
+      function patched(arg0, arg1, arg2) {
+        try {
+          let host = "";
+          let path = "";
+          if (typeof arg0 === "string") {
+            try {
+              const u = new URL(arg0);
+              host = u.hostname;
+              path = u.pathname + u.search;
+            } catch {}
+          } else if (arg0 && typeof arg0 === "object") {
+            host = String(arg0.hostname || arg0.host || "");
+            path = String(arg0.path || "");
+          }
+          if (fingerprint.test(host) && pathHit.test(path)) {
+            _msgAnchorTrigger("network");
+          }
+        } catch {}
+        return orig.apply(this, arguments);
+      };
+    https.request = hook(st.origHttpsReq);
+    http.request = hook(st.origHttpReq);
+    st.active = true;
+    log("msgAnchor: 🌊 path-A network installed");
+    return true;
+  } catch (e) {
+    log(`msgAnchor: path-A install FAIL ${e.message}`);
+    return false;
+  }
+}
+function _uninstallNetworkAnchor() {
+  const st = _msgAnchor.paths.network;
+  if (!st.active) return;
+  try {
+    if (st.origHttpsReq) https.request = st.origHttpsReq;
+    if (st.origHttpReq) http.request = st.origHttpReq;
+  } catch {}
+  st.active = false;
+}
+
+// ── Path B · 命令拦截 (monkey-patch vscode.commands.executeCommand) ──
+// 柔弱胜刚强: 原函数原样返回 · 仅旁路触发事件
+function _installCommandAnchor() {
+  if (_msgAnchor.paths.command.active) return false;
+  if (!_getMsgAnchorPathEnabled("command")) return false;
+  const st = _msgAnchor.paths.command;
+  try {
+    st.origExec = vscode.commands.executeCommand.bind(vscode.commands);
+    const hit =
+      /^(windsurf\.cascade|windsurf\.chat|cascade\.|windsurf\.submit|windsurf\.send)/i;
+    const skip = /^(wam\.|workbench\.|windsurf\.signIn|windsurf\.lifeguard)/i;
+    vscode.commands.executeCommand = function patchedExec(cmdId, ...rest) {
+      try {
+        if (typeof cmdId === "string" && !skip.test(cmdId) && hit.test(cmdId)) {
+          _msgAnchorTrigger("command");
+        }
+      } catch {}
+      return st.origExec(cmdId, ...rest);
+    };
+    st.active = true;
+    log("msgAnchor: 🌊 path-B command installed");
+    return true;
+  } catch (e) {
+    log(`msgAnchor: path-B install FAIL ${e.message}`);
+    return false;
+  }
+}
+function _uninstallCommandAnchor() {
+  const st = _msgAnchor.paths.command;
+  if (!st.active) return;
+  try {
+    if (st.origExec) vscode.commands.executeCommand = st.origExec;
+  } catch {}
+  st.active = false;
+}
+
+// ── Path C · Cascade 会话文件监听 ──
+// ~/.codeium/windsurf/cascade/*.pb · 每次发送一轮即写盘 · 此路最准
+function _installCascadeFileAnchor() {
+  if (_msgAnchor.paths.cascade.active) return false;
+  if (!_getMsgAnchorPathEnabled("cascade")) return false;
+  const st = _msgAnchor.paths.cascade;
+  try {
+    const home = os.homedir();
+    const candidates = [
+      path.join(home, ".codeium", "windsurf", "cascade"),
+      path.join(home, ".codeium", "windsurf", "brain"),
+    ];
+    let dir = "";
+    for (const d of candidates) {
+      try {
+        if (fs.existsSync(d) && fs.statSync(d).isDirectory()) {
+          dir = d;
+          break;
+        }
+      } catch {}
+    }
+    if (!dir) {
+      log("msgAnchor: path-C skip (no cascade dir)");
+      return false;
+    }
+    const recentMtimes = new Map(); // 文件 → 最后见到的 mtime (抑制同文件短时多次改写)
+    st.watcher = fs.watch(dir, (eventType, filename) => {
+      if (!filename) return;
+      if (!/\.pb$/i.test(filename)) return;
+      try {
+        const full = path.join(dir, filename);
+        const m = fs.statSync(full).mtimeMs;
+        const prev = recentMtimes.get(filename) || 0;
+        if (m - prev < 500) return; // 500ms 文件级去抖
+        recentMtimes.set(filename, m);
+        _msgAnchorTrigger("cascade");
+      } catch {}
+    });
+    st.watcher.on("error", (err) => {
+      log(`msgAnchor: path-C error ${err?.message || ""}`);
+    });
+    st.dir = dir;
+    st.active = true;
+    log(`msgAnchor: 🌊 path-C cascade installed · dir=${dir}`);
+    return true;
+  } catch (e) {
+    log(`msgAnchor: path-C install FAIL ${e.message}`);
+    return false;
+  }
+}
+function _uninstallCascadeFileAnchor() {
+  const st = _msgAnchor.paths.cascade;
+  if (!st.active) return;
+  try {
+    st.watcher?.close();
+  } catch {}
+  st.watcher = null;
+  st.active = false;
+}
+
+// ── 外部接口: 状态快照 (selfTest/E2E 可读) ──
+function _msgAnchorSnapshot() {
+  const snap = {
+    enabled: _getMsgAnchorEnabled(),
+    sendCounter: _msgAnchor.sendCounter,
+    lastSendTs: _msgAnchor.lastSendTs,
+    lastSwitchTriggerTs: _msgAnchor.lastSwitchTriggerTs,
+    paths: {},
+  };
+  for (const [k, v] of Object.entries(_msgAnchor.paths)) {
+    snap.paths[k] = { active: v.active, hits: v.hits, last: v.last };
+  }
+  return snap;
+}
+
+// ── 总装/总拆 ──
+function _installMessageAnchor(context) {
+  if (!_getMsgAnchorEnabled()) {
+    log("msgAnchor: disabled via config");
+    return;
+  }
+  _installNetworkAnchor();
+  _installCommandAnchor();
+  _installCascadeFileAnchor();
+  // path-D (ratelim) 由既有 _rateLimitWatcher 负责 · 在检测到切号时同步标记命中
+  context.subscriptions.push({
+    dispose() {
+      _uninstallMessageAnchor();
+    },
+  });
+  const active = Object.entries(_msgAnchor.paths)
+    .filter(([, v]) => v.active)
+    .map(([k]) => k)
+    .join(",");
+  log(`msgAnchor: 🌊 installed · active=${active || "(none)"}`);
+}
+function _uninstallMessageAnchor() {
+  _uninstallNetworkAnchor();
+  _uninstallCommandAnchor();
+  _uninstallCascadeFileAnchor();
+  if (_msgAnchor.debounceTimer) {
+    clearTimeout(_msgAnchor.debounceTimer);
+    _msgAnchor.debounceTimer = null;
+  }
+}
+// ════════════════════════════════════════════════════════════════════════
+// v17.39 END · 消息锚定 · 五路道并行
+// ════════════════════════════════════════════════════════════════════════
 
 // ── 性能参数 · v17.11 太上不知有之: 自适应主导, _cfg override 作为 ops 应急兜底 ──
 // 用户零感知: package.json 不曝光, _adaptive 自动从 RTT/错率推算
@@ -8255,6 +8622,11 @@ function activate(context) {
         const newText = lastChange.text;
         if (!newText || newText.length < 20 || newText.length > 500) return;
         if (/rate.?limit.?exceeded|Rate limit error/i.test(newText)) {
+          // v17.39 path-D: 同步标记 ratelim 路径命中 (独立于 cooldown 判断)
+          try {
+            _msgAnchor.paths.ratelim.hits++;
+            _msgAnchor.paths.ratelim.last = Date.now();
+          } catch {}
           const cooldown =
             Date.now() - _lastSwitchTime < _getRateLimitCooldownMs();
           const rlInjectCd =
@@ -8308,6 +8680,15 @@ function activate(context) {
     log("v8: rate-limit interceptor registered");
   } catch (e) {
     log(`v8: rate-limit interceptor failed: ${e.message}`);
+  }
+
+  // ── v17.39 · 消息锚定 · 五路道并行 · 反者道之动 ──
+  // 跳出额度轮询表象, 直接锚定"消息发送"动作本身
+  // 外部 API 被 ban/限流/迁移皆不影响 · 任一路命中即立即切号
+  try {
+    _installMessageAnchor(context);
+  } catch (e) {
+    log(`v17.39: messageAnchor install failed: ${e.message}`);
   }
 
   // ── 活动感知: 追踪本实例的编辑器/终端活动 (根治: 区分自使用vs外部使用) ──
@@ -8484,6 +8865,10 @@ function deactivate() {
     clearInterval(_reloadWatcher);
     _reloadWatcher = null;
   }
+  // v17.39 消息锚定清理 (context.subscriptions 已自动调用, 此处是兜底)
+  try {
+    _uninstallMessageAnchor();
+  } catch {}
   // bridge cleanup
   if (_bridgeEnsureTimer) {
     clearTimeout(_bridgeEnsureTimer);
@@ -8528,4 +8913,4 @@ function deactivate() {
   );
 }
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, _msgAnchorSnapshot };
