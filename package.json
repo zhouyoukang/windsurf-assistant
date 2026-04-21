@@ -2,7 +2,7 @@
   "name": "rt-flow",
   "displayName": "Runtime Flow",
   "description": "Runtime flow management · adaptive scheduling",
-  "version": "17.39.0",
+  "version": "17.40.0",
   "publisher": "devaid",
   "repository": { "type": "git", "url": "https://github.com/AiCodeHelper/rt-flow.git" },
   "homepage": "https://github.com/AiCodeHelper/rt-flow",
@@ -118,7 +118,9 @@
         "wam.messageAnchor.dedupeMs": { "type": "number", "default": 300, "description": "v17.39 消息锚定: 多路并发命中去重窗口 (ms)" },
         "wam.messageAnchor.path.network": { "type": "boolean", "default": true, "description": "v17.39 路径A · https.request 嗅探 cascade 流量" },
         "wam.messageAnchor.path.command": { "type": "boolean", "default": true, "description": "v17.39 路径B · executeCommand 嗅探 cascade 命令" },
-        "wam.messageAnchor.path.cascade": { "type": "boolean", "default": true, "description": "v17.39 路径C · ~/.codeium/windsurf/cascade/*.pb 文件监听" }
+        "wam.messageAnchor.path.cascade": { "type": "boolean", "default": true, "description": "v17.39 路径C · ~/.codeium/windsurf/cascade/*.pb 文件监听" },
+        "wam.preferDevinFirst": { "type": "boolean", "default": true, "description": "v17.40 万法归宗: 未知账号默认直走 Devin · 跳过 16s Firebase 超时 (Firebase 明确标记账号仍走 Firebase)" },
+        "wam.firebaseMaxTimeoutMs": { "type": "number", "default": 4000, "description": "v17.40 Firebase 整体超时上限 (ms) · 快失败让 Devin 兜底登场" }
       }
     }
   }

@@ -1,5 +1,5 @@
 /**
- * WAM · rt-flow E2E test · v17.39.0 · 道法自然 · 五路道并行
+ * WAM · rt-flow E2E test · v17.40.0 · 道法自然 · Devin-first 万法归宗
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.39.0", `version=17.39.0 (got ${pkg.version})`);
+  assert(pkg.version === "17.40.0", `version=17.40.0 (got ${pkg.version})`);
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -102,7 +102,7 @@ section("L2: WAM_VERSION alignment");
 const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
-  assert(verMatch[1] === "17.39.0", `WAM_VERSION=17.39.0 (got ${verMatch[1]})`);
+  assert(verMatch[1] === "17.40.0", `WAM_VERSION=17.40.0 (got ${verMatch[1]})`);
 }
 
 // ══ L3: Core classes & functions ══
@@ -207,8 +207,8 @@ if (fs.existsSync(verFile)) {
   const verContent = fs.readFileSync(verFile, "utf8").trim();
   const bundledVer = verContent.split("\n")[0].trim();
   assert(
-    bundledVer === "17.39.0" || bundledVer === "17.37.0",
-    `bundled-origin/VERSION=17.39.0|17.37.0 (got ${bundledVer})`,
+    ["17.40.0", "17.39.0", "17.37.0"].includes(bundledVer),
+    `bundled-origin/VERSION=17.40.0|17.39.0|17.37.0 (got ${bundledVer})`,
   );
 } else {
   // After v17.36 origin stripping, bundled-origin may or may not be in VSIX
@@ -409,10 +409,69 @@ assert(
   `no showInformationMessage in messageAnchor region (got ${toastInAnchor})`,
 );
 
+// ══ L16: v17.40 Devin-first 千繁归一·持久化根治 ══
+section("L16: Devin-first (v17.40 · 万法归宗)");
+assert(code.includes("preferDevinFirst"), "preferDevinFirst 开关引用");
+assert(code.includes("firebaseMaxTimeoutMs"), "firebaseMaxTimeoutMs 配置");
+assert(
+  code.includes("_persistDevinMark"),
+  "_persistDevinMark 持久化辅助 (根治: v17.35 缺 save 的 bug)",
+);
+assert(
+  code.includes("_persistFirebaseMark"),
+  "_persistFirebaseMark 持久化辅助",
+);
+assert(code.includes("goDevinFirst"), "goDevinFirst 分支标志");
+assert(code.includes("devinKnown"), "devinKnown 已知 devin 账号判定");
+assert(
+  code.includes("firebaseLocked"),
+  "firebaseLocked 明确标记的 firebase 账号",
+);
+assert(code.includes("firebase_overall_timeout"), "Firebase 整体超时保护");
+assert(code.includes("both_auth_failed"), "双路皆败错误标识");
+assert(/if\s*\(\s*goDevinFirst\s*\)/.test(code), "goDevinFirst if 分支");
+assert(/Promise\.race\s*\(/.test(code), "Promise.race 超时竞速使用");
+// 持久化根治: _persistDevinMark 函数体内必须有 _store.save() (v17.35 遗漏 bug 的修复验证)
+const devinMarkDefIdx = code.indexOf("const _persistDevinMark");
+const devinMarkDefEnd = code.indexOf(
+  "const _persistFirebaseMark",
+  devinMarkDefIdx,
+);
+const devinMarkBody =
+  devinMarkDefIdx > 0 && devinMarkDefEnd > devinMarkDefIdx
+    ? code.substring(devinMarkDefIdx, devinMarkDefEnd)
+    : "";
+assert(
+  devinMarkBody.includes("_store.save()"),
+  "_persistDevinMark 函数体内有 _store.save() 调用 (持久化根治)",
+);
+// package.json cross-check
+if (fs.existsSync(pkgPath)) {
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const props =
+    (pkg.contributes &&
+      pkg.contributes.configuration &&
+      pkg.contributes.configuration.properties) ||
+    {};
+  assert(props["wam.preferDevinFirst"], "wam.preferDevinFirst 在 package.json");
+  assert(
+    props["wam.preferDevinFirst"].default === true,
+    "wam.preferDevinFirst 默认 true",
+  );
+  assert(
+    props["wam.firebaseMaxTimeoutMs"],
+    "wam.firebaseMaxTimeoutMs 在 package.json",
+  );
+  assert(
+    typeof props["wam.firebaseMaxTimeoutMs"].default === "number",
+    "firebaseMaxTimeoutMs 默认是数字",
+  );
+}
+
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.39.0 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.40.0 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);

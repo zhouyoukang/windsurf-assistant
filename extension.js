@@ -397,7 +397,7 @@ const RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 const RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.39.0"; // v17.39.0: 反者道之动 · 消息锚定·五路道并行 · 跳出额度轮询表象 · 直触 cascade send 立即切号 (太上不知有之 · 上德若偷)
+const WAM_VERSION = "17.40.0"; // v17.40.0: 万法归宗 · Devin-first 直连本源 + 持久化根治 + firebase 超时 race · 跳过 16s Firebase 超时 (反者道之动 · 损之又损)
 
 let _store = null;
 let _sidebarProvider = null;
@@ -3970,35 +3970,116 @@ async function fetchAccountQuota(email, password) {
   }
   _quotaFetchCooldown.set(key, { nextAllowedTs: now + _getQuotaMinInterval() });
 
-  // v17.35 道法自然 · 万法归宗 · Devin 迁移全面适配
-  // 背景: Cognition 收购 Windsurf · 全部账号迁移至 Devin · Firebase idToken 被 backend 拒绝 ("migrated")
-  // 策略:
-  //   1. 已知 Devin 账号 → 跳过 Firebase · 直接 _devinFullSwitch (省去超时浪费)
-  //   2. Firebase 失败 → 无条件尝试 Devin fallback (不再限于 INVALID/WRONG 模式)
-  //   3. GetPlanStatus 返回 "migrated" → 标记账号 · 下次循环直走 Devin
+  // v17.40 道法自然 · 万法归宗 · Devin-first 直连本源 · 反者道之动
+  // 背景: Cognition 全面迁移至 Devin · Firebase endpoint (identitytoolkit.googleapis.com) 实测不可达
+  //       16s Firebase 超时 × 每账号 × 每次 fetchQuota = 整链僵死
+  // 策略 (损之又损 · 无为而无不为):
+  //   1. wam.preferDevinFirst=true (默认) → Devin 优先 · unset 账号直走 Devin · 跳 Firebase 超时
+  //   2. 已明确 _authSystem=firebase 的账号 → 仍走 Firebase 优先 (legacy 尊重)
+  //   3. 首次 Devin 成功 → 持久化 _authSystem=devin + _store.save() (v17.40 修复: 此前缺 save 导致重启丢失)
+  //   4. Devin 失败 → Firebase 兜底 (水善利万物, 双路互为应急)
+  //   5. GetPlanStatus 返回 "migrated" → 标记 devin + _store.save() (既有)
+  const _firebaseTimeoutMs = _cfg("firebaseMaxTimeoutMs", 4000); // Firebase 整体超时上限 (Promise.any 协同 timeout)
+  const _preferDevinFirst = _cfg("preferDevinFirst", true);
   let authToken = null;
   const acc = _store
     ? _store.accounts.find((a) => a.email.toLowerCase() === key)
     : null;
-  if (acc && acc._authSystem === "devin") {
-    // 快速路径: 已知 Devin 账号, 跳过 Firebase (省 ~10-42s 超时)
+  const devinKnown = !!(acc && acc._authSystem === "devin");
+  const firebaseLocked = !!(acc && acc._authSystem === "firebase"); // 明确标记 · 不被 override
+  const goDevinFirst = devinKnown || (_preferDevinFirst && !firebaseLocked);
+
+  // ── 首次 Devin 成功的持久化辅助 ──
+  const _persistDevinMark = (ds) => {
+    if (!acc) return;
+    const wasDevin = acc._authSystem === "devin";
+    acc._authSystem = "devin";
+    acc._devinUserId = ds.userId || acc._devinUserId;
+    acc._devinAccountId = ds.accountId || acc._devinAccountId;
+    acc._devinOrgId = ds.primaryOrgId || acc._devinOrgId;
+    acc._devinSessionAt = Date.now();
+    acc._devinVerified = true;
+    acc._lastVerified = Date.now();
+    delete acc._verifyFailed;
+    delete acc._verifyFailedAt;
+    acc._verifyFailedCount = 0;
+    delete acc._unverified;
+    // v17.40 根治 · 持久化 (v17.35 此处缺失 → 每次重启丢失 devin 标记)
+    if (!wasDevin) {
+      try {
+        _store.save();
+        log(`fetchQuota: ${email} 🌊 首次标记 devin · 已持久化`);
+      } catch (e) {
+        log(`fetchQuota: ${email} devin 持久化失败 ${e.message}`);
+      }
+    }
+  };
+  const _persistFirebaseMark = () => {
+    if (!acc || acc._authSystem === "firebase") return;
+    acc._authSystem = "firebase";
+    try {
+      _store.save();
+      log(`fetchQuota: ${email} 🌊 首次标记 firebase · 已持久化`);
+    } catch {}
+  };
+
+  if (goDevinFirst) {
+    // 主道: Devin 直连 (v17.40 新默认 · 实测 1-2s)
     const ds = await _devinFullSwitch(email, password);
     if (ds.ok) {
       authToken = ds.sessionToken;
+      _persistDevinMark(ds);
       log(
-        `fetchQuota: ${email} devin-fast sessionToken=${ds.sessionToken.substring(0, 30)}...`,
+        `fetchQuota: ${email} ${devinKnown ? "devin-known" : "devin-first"} sessionToken=${ds.sessionToken.substring(0, 30)}...`,
       );
     } else {
-      log(`fetchQuota: ${email} devin-fast FAIL ${ds.stage}/${ds.error}`);
-      return { ok: false, error: `devin_${ds.stage}: ${ds.error}` };
+      // Devin 失败 → Firebase 兜底 (水善利万物 · 双路互备)
+      log(
+        `fetchQuota: ${email} Devin FAIL ${ds.stage}/${ds.error} — Firebase 兜底`,
+      );
+      const firebasePromise = getCachedToken(email, password);
+      const timeoutPromise = new Promise((_, rej) =>
+        setTimeout(
+          () => rej(new Error("firebase_overall_timeout")),
+          _firebaseTimeoutMs,
+        ),
+      );
+      let loginResult;
+      try {
+        loginResult = await Promise.race([firebasePromise, timeoutPromise]);
+      } catch (e) {
+        loginResult = { ok: false, error: e.message };
+      }
+      if (!loginResult.ok) {
+        log(
+          `fetchQuota: ${email} 两路皆 FAIL · devin=${ds.error} firebase=${loginResult.error}`,
+        );
+        return {
+          ok: false,
+          error: `both_auth_failed: devin=${ds.error} firebase=${loginResult.error}`,
+        };
+      }
+      authToken = loginResult.idToken;
+      _persistFirebaseMark();
     }
   } else {
-    const loginResult = await getCachedToken(email, password);
+    // Legacy 通道: 明确 _authSystem=firebase 的账号走 Firebase 优先
+    const firebasePromise = getCachedToken(email, password);
+    const timeoutPromise = new Promise((_, rej) =>
+      setTimeout(
+        () => rej(new Error("firebase_overall_timeout")),
+        _firebaseTimeoutMs,
+      ),
+    );
+    let loginResult;
+    try {
+      loginResult = await Promise.race([firebasePromise, timeoutPromise]);
+    } catch (e) {
+      loginResult = { ok: false, error: e.message };
+    }
     if (loginResult.ok) {
       authToken = loginResult.idToken;
     } else {
-      // v17.35: Firebase 失败 → 无条件尝试 Devin fallback
-      // 旧版仅在 INVALID/NOT_FOUND 时尝试 · 网络超时/all_channels_failed 被遗漏
       _tokenCache.delete(key);
       const err = loginResult.error || "";
       log(`fetchQuota: ${email} Firebase FAIL(${err}) — Devin fallback`);
@@ -4008,19 +4089,7 @@ async function fetchAccountQuota(email, password) {
         return { ok: false, error: `devin_${ds.stage}: ${ds.error}` };
       }
       authToken = ds.sessionToken;
-      if (acc) {
-        acc._authSystem = "devin";
-        acc._devinUserId = ds.userId;
-        acc._devinAccountId = ds.accountId;
-        acc._devinOrgId = ds.primaryOrgId;
-        acc._devinSessionAt = Date.now();
-        acc._devinVerified = true;
-        acc._lastVerified = Date.now();
-        delete acc._verifyFailed;
-        delete acc._verifyFailedAt;
-        acc._verifyFailedCount = 0;
-        delete acc._unverified;
-      }
+      _persistDevinMark(ds); // v17.40 根治 · 持久化
       log(
         `fetchQuota: ${email} Devin OK sessionToken=${ds.sessionToken.substring(0, 30)}...`,
       );

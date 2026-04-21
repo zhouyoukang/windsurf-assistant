@@ -1,5 +1,77 @@
 # Changelog
 
+## v17.40.0 · 万法归宗 · Devin-first 直连本源 · 持久化根治
+
+### 病根 (实地底层测 · 反者道之动)
+
+v17.39 消息锚定解决"触发晚", 但用户侧观察 "采样无数据" — 额度识别仍未真正打通. 调用本地 91 账号底层直测:
+
+```
+byAuth: { (unset): 76, devin: 15 }       ← 76 账号仍未标记 devin
+Firebase: 6/6 timeout 16s                ← identitytoolkit.googleapis.com 不可达
+Devin:    6/6 OK 1-2s (login→postAuth→GetPlanStatus 200)
+```
+
+**三重病根**:
+
+1. **Firebase 端点不可达** · `identitytoolkit.googleapis.com` TCP timeout 5s (可能 GFW/路由)
+2. **76 账号仍 `(unset)`** · 每次 `fetchQuota` 先等 Firebase 16s 超时, 再降级 Devin
+3. **持久化 bug @extension.js:4011** · Firebase fail → Devin OK 时 `acc._authSystem="devin"` 仅内存, **缺 `_store.save()`** → 重启清零回到原点
+
+### 药方 (万法归宗 · 损之又损)
+
+**Phase-1 立竿见影** (不改插件代码):
+- 批量迁移 141 本机 76 + 179 远程 92 账号 → `_authSystem="devin"` 持久化到 accounts.json
+- Reload 即 91 账号皆走快速路径
+
+**Phase-2 根治** (extension.js:3973-4087 重写 `fetchAccountQuota`):
+
+| 改 | 旧 | 新 |
+|----|----|----|
+| **主道** | `devin-known ? Devin : Firebase` | `goDevinFirst ? Devin : Firebase` (devinKnown ∥ preferDevinFirst) |
+| **持久化** | 只在 "migrated" 401 时 save | `_persistDevinMark` + `_persistFirebaseMark` 首次标记即 save |
+| **Firebase 超时** | 12-16s 无保护 | `Promise.race` + `firebaseMaxTimeoutMs=4000` 上限 |
+| **Devin 失败** | 直接 return FAIL | → Firebase 兜底 (双路互为应急) |
+| **错误标识** | `devin_login: xxx` | `both_auth_failed: devin=xxx firebase=xxx` (诊断更清晰) |
+
+### 新 config
+
+| key | 默认 | 用途 |
+|-----|------|------|
+| `wam.preferDevinFirst` | `true` | 未知账号默认直走 Devin · Firebase 明确标记账号仍走 Firebase |
+| `wam.firebaseMaxTimeoutMs` | `4000` | Firebase 整体超时 ms · 快失败让 Devin 兜底 |
+
+### 实测对比
+
+| 场景 | 旧 (v17.39) | 新 (v17.40) |
+|------|-------------|-------------|
+| unset 账号首次 fetchQuota | ~16-18s (Firebase timeout + Devin) | **~2-4s** (Devin 直连) |
+| devin 账号稳态 fetchQuota | ~2-3s (已优) | ~2-3s (不变) |
+| Firebase 账号 (legacy) | ~1-3s | ~1-3s (Firebase-first, 保留 legacy 行为) |
+| 重启后 devin 标记 | ❌ 丢失 (v17.35 bug) | ✅ 持久化 (v17.40 修复) |
+
+### 损 (为道日损)
+
+| 位置 | 改动 |
+|------|------|
+| `@extension.js:400` | `WAM_VERSION = "17.40.0"` |
+| `@extension.js:3973-4087` | `fetchAccountQuota` 分支重构 · `_persistDevinMark`/`_persistFirebaseMark` 辅助 · `Promise.race` Firebase 超时保护 |
+| `@package.json` | +2 config · `wam.preferDevinFirst` + `wam.firebaseMaxTimeoutMs` |
+| `@_wam_e2e.js` | +L16 共 14 条断言 · 104/104 ALL GREEN |
+| `@bundled-origin/VERSION` | `17.39.0` → `17.40.0` |
+| `@accounts.json` (运行时) | 141: 76 unset→devin · 179: 92 unset→devin (脚本迁移, 非插件产物) |
+
+### 验证
+
+- **Source E2E**: 104 pass / 0 fail / 0 skip
+- **141 本机**: 100/100 ALL GREEN · 91 账号全 devin
+- **179 远程**: 100/100 ALL GREEN · 92 账号全 devin
+- **Hash 三端**: `extension.js=f98b66151ab82d38` · `package.json=4b3ebd741f28d6de`
+- **底层实测**: 3/3 迁移后账号 Devin 全链路 1.5-2.5s 完成 (vs 18s 改前)
+- **VSIX**: `rt-flow-17.40.0.vsix` 122 KB
+
+---
+
 ## v17.39.0 · 反者道之动 · 消息锚定·五路道并行 · 跳出轮询表象
 
 ### 病根 (v17.38-stealth 换身份后深审)
