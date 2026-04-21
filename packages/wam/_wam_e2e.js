@@ -1,5 +1,5 @@
 /**
- * WAM · rt-flow E2E test · v17.41.0 · 唯变所适 · 去除一切硬路径硬端口硬编码
+ * WAM · rt-flow E2E test · v17.42.2 · 去芜存菁 · 切号不变量归一 _afterSwitchSuccess (大制不割)
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.41.0", `version=17.41.0 (got ${pkg.version})`);
+  assert(pkg.version === "17.42.2", `version=17.42.2 (got ${pkg.version})`);
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -102,7 +102,7 @@ section("L2: WAM_VERSION alignment");
 const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
-  assert(verMatch[1] === "17.41.0", `WAM_VERSION=17.41.0 (got ${verMatch[1]})`);
+  assert(verMatch[1] === "17.42.2", `WAM_VERSION=17.42.2 (got ${verMatch[1]})`);
 }
 
 // ══ L3: Core classes & functions ══
@@ -333,14 +333,28 @@ assert(
   "path-ratelim tracked in state",
 );
 assert(
+  code.includes("_msgAnchor.paths.http2"),
+  "path-http2 tracked in state (v17.42)",
+);
+assert(
+  code.includes("_installHttp2Anchor"),
+  "Path E: HTTP/2 prototype-level hook installer (v17.42)",
+);
+assert(
+  code.includes("_uninstallHttp2Anchor"),
+  "_uninstallHttp2Anchor teardown (v17.42)",
+);
+assert(
   code.includes(".codeium") &&
     code.includes("windsurf") &&
     code.includes("cascade"),
   "cascade dir path ~/.codeium/windsurf/cascade",
 );
 assert(
-  code.includes("fingerprint") || code.includes("StreamCascade"),
-  "cascade network fingerprint regex present",
+  code.includes("grpcCascadeSend") ||
+    code.includes("StreamCascade") ||
+    code.includes("cloudPath"),
+  "cascade network fingerprint regex present (v17.42: grpcCascadeSend/cloudPath)",
 );
 // multi-Dao: network.request 被钩且保留原函数
 assert(
@@ -526,10 +540,131 @@ assert(
 );
 assert(!code.includes("const WAM_DIR"), "WAM_DIR 不再是 const (可动态赋值)");
 
+// ══ L18: v17.42 反者道之动 · 逆向本源根治msgAnchor ══
+section(
+  "L18: v17.42 反者道之动 (localhost gRPC + http2 + fetch + 五感退出 + monitor退避)",
+);
+// http2 require
+assert(code.includes('require("http2")'), "http2 module imported");
+// Path A 增强: localhost gRPC 双层匹配
+assert(
+  code.includes("localHost") || code.includes("localhost"),
+  "localhost gRPC 匹配 (v17.42 双层: 云端宽松+本地精确)",
+);
+assert(
+  code.includes("grpcCascadeSend") || code.includes("SendUserCascadeMessage"),
+  "逆向确认的真实 gRPC 方法名 (SendUserCascadeMessage 等)",
+);
+// Path A 增强: globalThis.fetch hook
+assert(
+  code.includes("origFetch") || code.includes("patchedFetch"),
+  "globalThis.fetch hook (ConnectRPC undici 覆盖)",
+);
+// Path E: HTTP/2 prototype-level hook
+assert(
+  code.includes("origProtoRequest") || code.includes("_patchedProto"),
+  "HTTP/2 ClientHttp2Session.prototype.request hook (v17.42 原型链穿透)",
+);
+assert(
+  code.includes("_getActiveHandles"),
+  "process._getActiveHandles 定位活跃 HTTP/2 session",
+);
+// 消息即标记使用中
+assert(
+  code.includes("markInUse"),
+  "消息发送即标记使用中 (v17.42: 不等额度变化)",
+);
+// 五感快速退出 (inject 失败不重试)
+assert(
+  code.includes("五感注入失败") || code.includes("五感模式"),
+  "五感注入失败快速退出 (知止可以不殆)",
+);
+// monitor 退避 (连续失败递增间隔)
+assert(
+  code.includes("_monitorConsecutiveFails"),
+  "monitor 连续失败退避计数 (v17.42 知止可以不殆)",
+);
+assert(code.includes("monitorInterval"), "monitor 动态退避间隔函数");
+// v17.42.1: 切号重置退避 (归入 _afterSwitchSuccess 后仅 2 处: helper定义 + fetch成功)
+assert(
+  (code.match(/_monitorConsecutiveFails\s*=\s*0/g) || []).length >= 2,
+  "_monitorConsecutiveFails=0 至少 2 处 (helper + 监测成功)",
+);
+// v17.42.1: origFetch 初始声明
+assert(
+  code.includes("origFetch: null"),
+  "origFetch: null 初始声明 (fetch hook 状态完整)",
+);
+
+// ══ L19: v17.42.2 去芜存菁 · 切号后state不变量归一 ══
+section("L19: v17.42.2 去芜存菁 (大制不割 · _afterSwitchSuccess)");
+assert(
+  code.includes("function _afterSwitchSuccess"),
+  "_afterSwitchSuccess 统一不变量函数 (v17.42.2)",
+);
+// helper 必须包含所有 6 项不变量
+const asDefIdx = code.indexOf("function _afterSwitchSuccess");
+const asDefEnd = asDefIdx > 0 ? code.indexOf("\n}", asDefIdx) : -1;
+const asBody =
+  asDefIdx > 0 && asDefEnd > asDefIdx
+    ? code.substring(asDefIdx, asDefEnd + 2)
+    : "";
+assert(
+  asBody.includes("_store.activeIndex = bestI"),
+  "_afterSwitchSuccess 含 _store.activeIndex 赋值",
+);
+assert(
+  asBody.includes("_store.switchCount++"),
+  "_afterSwitchSuccess 含 switchCount 递增",
+);
+assert(
+  asBody.includes("_lastSwitchTime = Date.now()"),
+  "_afterSwitchSuccess 含 _lastSwitchTime 更新",
+);
+assert(
+  asBody.includes("_monitorConsecutiveFails = 0"),
+  "_afterSwitchSuccess 含 monitor 退避重置",
+);
+assert(
+  asBody.includes("_store.save()"),
+  "_afterSwitchSuccess 含 _store.save() 持久化",
+);
+assert(
+  asBody.includes("_quotaSnapshots.delete"),
+  "_afterSwitchSuccess 含快照失效",
+);
+assert(
+  asBody.includes("_schedulePersist"),
+  "_afterSwitchSuccess 含 _schedulePersist",
+);
+// 8 路切号成功位全部调用 helper (msgAnchor/monitor/exhaust/ratelim/setMode/autoRotate/panic/wamMode)
+const callCount = (code.match(/_afterSwitchSuccess\(/g) || []).length;
+assert(
+  callCount >= 9, // 1 定义 + 8 调用
+  `_afterSwitchSuccess 调用 ≥ 8 处 (1 定义 + 8 切号位) · got ${callCount}`,
+);
+// 除 helper 外, 无任何散落的 _store.activeIndex = bestI (已归一 · 大制不割)
+// 使用多行模式: 仅匹配"行首 + 可选空白 + _store..." (排除注释 `// _store...`)
+const strayActiveIdx = (
+  code.match(/^\s*_store\.activeIndex\s*=\s*bestI\s*;/gm) || []
+).length;
+assert(
+  strayActiveIdx === 1, // 仅 helper 内 1 处 (可执行语句)
+  `_store.activeIndex = bestI 可执行语句仅 helper 内 1 处 · got ${strayActiveIdx}`,
+);
+// store.activeIndex 也归一 (局部 store 参数 e.g. doAutoRotate 已移除)
+const strayLocalStore = (
+  code.match(/^\s*store\.activeIndex\s*=\s*bestI\s*;/gm) || []
+).length;
+assert(
+  strayLocalStore === 0,
+  `局部 store.activeIndex = bestI 已归一 · got ${strayLocalStore}`,
+);
+
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.41.0 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.42.2 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);

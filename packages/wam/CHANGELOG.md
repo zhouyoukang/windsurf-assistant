@@ -1,5 +1,141 @@
 # Changelog
 
+## v17.42.2 · 去芜存菁 · 大制不割 · 切号后 state 不变量归一 `_afterSwitchSuccess`
+
+### 病根 (v17.42.1 深审 · 以神遇而不以目视)
+
+v17.42.1 仅修了 4 路 (msgAnchor/monitor/exhaust/ratelim) 的 `_monitorConsecutiveFails=0`. **一查发现**:
+
+- 另有 **4 路 user-driven 切号成功位**同样遗漏 (`setMode webview / doAutoRotate / panicSwitch / wam.wamMode`)
+- 这 4 路连 `_lastSwitchTime = Date.now()` 也未写 · 用户手动切号后冷却闸门失效 · msgAnchor/ratelim 可立即连环切
+- 即: **8 路切号成功位 · state 更新散落各处 · 任一路遗漏一项即产生不一致**
+
+### 药方 (大制不割 · 朴散则为器)
+
+抽出 `_afterSwitchSuccess(bestI, email)` helper · 集中 6 项不变量:
+
+```
+1. _store.activeIndex = bestI        ← 切换指针
+2. _store.switchCount++              ← 累计计数
+3. _lastSwitchTime = Date.now()      ← 冷却起点
+4. _monitorConsecutiveFails = 0      ← 新号不继承旧退避
+5. _store.save()                     ← 持久化 (v17.37 根治)
+6. _quotaSnapshots.delete + _schedulePersist  ← 快照失效
+```
+
+**8 路切号成功位全部改为 `_afterSwitchSuccess(bestI, email)` 一行调用**:
+
+| # | 路径 | 文件行 | v17.42.1 遗漏项 |
+|---|------|--------|-----------------|
+| 1 | msgAnchor | `@extension.js:611` | (完整) |
+| 2 | monitor 额度变化 | `@extension.js:6600` | (完整) |
+| 3 | 耗尽保护 | `@extension.js:6756` | (完整) |
+| 4 | rate-limit 拦截 | `@extension.js:8996` | (完整) |
+| 5 | **webview setMode** | `@extension.js:7303` | **_lastSwitchTime + _monitorConsecutiveFails + 快照** |
+| 6 | **doAutoRotate 手动轮转** | `@extension.js:7903` | **_lastSwitchTime + _monitorConsecutiveFails** |
+| 7 | **panicSwitch 紧急切换** | `@extension.js:8812` | **_lastSwitchTime + _monitorConsecutiveFails** |
+| 8 | **wam.wamMode 模式命令** | `@extension.js:8886` | **_lastSwitchTime + _monitorConsecutiveFails + 快照** |
+
+新增路径再不可能遗漏 · 一处修复全链生效 · **大制不割**.
+
+### 损 (为道日损)
+
+| 位置 | 改动 |
+|------|------|
+| `@extension.js:9` | 头注释新增 v17.42.2 行 |
+| `@extension.js:437` | `WAM_VERSION = "17.42.2"` |
+| `@extension.js:6371-6403` | 新增 `_afterSwitchSuccess(bestI, email)` helper (33 行 · 含病根药方注释) |
+| `@extension.js:611/6600/6756/7303/7903/8812/8886/8996` | 8 路切号成功位改为 helper 调用 |
+| `@package.json:5` | `version: "17.42.2"` |
+| `@_wam_e2e.js` | +L19 共 11 条断言 (helper 存在 / 6 项不变量 / ≥ 8 调用 / 散落归一) |
+
+### 验证
+
+- **Source E2E**: 160 pass / 0 fail / 0 skip · L1-L19 十九层全绿
+- **收益**: 8 路统一 · 未来新增切号路径忘了重置 backoff/冷却的 bug 类彻底杜绝
+
+---
+
+## v17.42.1 · 去芜存菁 · 切号即重置 monitor 退避 + origFetch 完整声明
+
+### 病根 (v17.42.0 深审 · 去芜存菁)
+
+1. **切号后 monitor 退避未重置** · 旧账号因网络等原因连续失败 30 次后 backoff 升至 8x (30s) · 切到新账号仍继承旧退避 · 新账号监测异常慢
+2. **`_msgAnchor.paths.network` 初始状态缺 `origFetch: null`** · fetch hook 安装/卸载状态跟踪不完整
+
+### 药方
+
+1. 所有成功切号路径 (msgAnchor/monitor 额度变化/耗尽保护/rate-limit 拦截) 统一 `_monitorConsecutiveFails = 0` · 新账号从正常频率开始监测
+2. 初始状态补全 `origFetch: null` · 确保 fetch hook 生命周期完整
+
+### 验证
+
+- **E2E**: 149 pass / 0 fail · L1-L18 + 2 新断言 (退避重置 ≥4 处 + origFetch 声明)
+- **三端部署**: source / 141 / 179 hash 一致 · 全绿
+
+---
+
+## v17.42.0 · 反者道之动 · 逆向本源根治 msgAnchor · localhost gRPC + http2 hook + 五感快速退出
+
+### 病根 (v17.41 实地深测 · 反者道之动)
+
+v17.41 去除硬路径硬编码后, 179 实测发现 **消息锚定命中率 N0** — 切号链仍"静默":
+
+```
+msgAnchor send# | N0 C2 F0 H0 R0   ← network 路径永远 0 命中
+```
+
+**三重病根**:
+
+1. **旧 network hook 仅匹配云端** · `codeium.com/windsurf.com` · 但 Windsurf 实际架构是 `extension → localhost:PORT(LS) → cloud` — **请求目标是 localhost, 非云端**
+2. **ConnectRPC 使用 `globalThis.fetch` (undici)** · 非 `https.request` — 旧 monkey-patch 永远不触发
+3. **HTTP/2 session 启动前已缓存** · `http2.connect = patched` 只拦截新 session · 已建立的不受影响
+
+### 药方 (反者道之动 · 逆向溯源)
+
+| 改 | 旧 | 新 |
+|----|----|----|
+| **Path A 网络** | 仅云端 `codeium.com` | 双层: 云端宽松 + localhost 精确 gRPC 匹配 (`SendUserCascadeMessage` 等逆向确认的 RPC 方法) |
+| **Path A fetch** | 无 | `globalThis.fetch` hook (覆盖 ConnectRPC undici) |
+| **Path E HTTP/2** | 无 | `ClientHttp2Session.prototype.request` 原型链穿透 (覆盖启动前创建的 session) |
+| **消息即使用中** | 依赖额度变化标记 | `_msgAnchorTrigger` → 立即 `markInUse` (消息发送=使用中) |
+| **五感快速退出** | inject 失败重试 3 次 × 12s | inject 系统性失败立即 break (知止可以不殆) |
+| **monitor 退避** | 固定 3s 间隔 | 连续失败递增: 0-3→1x, 4-10→2x, 10-30→4x, 30+→8x (最大 30s) |
+
+### 新 Path E · HTTP/2 原型链穿透
+
+```
+策略1: process._getActiveHandles() → 找活跃 Http2Session → patch prototype.request
+  → 覆盖所有 session (含启动前已建立的) · 一次 patch 终身生效
+策略2 fallback: http2.connect hook → 仅拦截未来 session (兼容无活跃 session 的场景)
+```
+
+### 损 (为道日损)
+
+| 位置 | 改动 |
+|------|------|
+| `@extension.js:437` | `WAM_VERSION = "17.42.0"` |
+| `@extension.js:14` | `require("http2")` |
+| `@extension.js:470-477` | 消息锚定路径表更新 · 新增 E·HTTP/2 路径说明 |
+| `@extension.js:479-497` | `_msgAnchor.paths.http2` 状态对象 |
+| `@extension.js:527-536` | `_msgAnchorTrigger` 消息即标记使用中 (`markInUse`) |
+| `@extension.js:626-654` | `_msgAnchorDoSwitch` 五感注入失败快速退出 |
+| `@extension.js:657-758` | `_installNetworkAnchor` 重写: localhost 双层匹配 + `globalThis.fetch` hook |
+| `@extension.js:760-798` | `_installCommandAnchor` 精确匹配逆向确认的命令名 |
+| `@extension.js:861-950` | 新 `_installHttp2Anchor` + `_uninstallHttp2Anchor` (原型链穿透策略) |
+| `@extension.js:6367-6408` | `_monitorConsecutiveFails` + 动态退避间隔 `monitorInterval()` |
+| `@package.json:5` | `version: "17.42.0"` |
+| `@_wam_e2e.js` | +L18 共 12 条新断言 · 147/147 ALL GREEN |
+
+### 验证
+
+- **Source E2E**: 147 pass / 0 fail / 0 skip
+- **141 本机**: 部署就绪
+- **179 远程**: 144 pass / 0 fail / 1 skip (预期 · .vscodeignore 不入运行时)
+- **Hash 一致**: source ↔ 179 `extension.js = 1c9b261063420ce8`
+
+---
+
 ## v17.40.0 · 万法归宗 · Devin-first 直连本源 · 持久化根治
 
 ### 病根 (实地底层测 · 反者道之动)

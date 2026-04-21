@@ -2,7 +2,7 @@
   "name": "rt-flow",
   "displayName": "Runtime Flow",
   "description": "Runtime flow management · adaptive scheduling",
-  "version": "17.41.0",
+  "version": "17.42.2",
   "publisher": "devaid",
   "repository": { "type": "git", "url": "https://github.com/AiCodeHelper/rt-flow.git" },
   "homepage": "https://github.com/AiCodeHelper/rt-flow",

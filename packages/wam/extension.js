@@ -5,11 +5,14 @@
 // ─ 双身份 ─ Firebase (主) · Devin (/_devin-auth/ · 新号) 自动探测切换
 // ─ v17.36 ─ origin/proxy 功能已剥离至独立插件 · 本源纯 WAM 切号
 // ─ v17.41 ─ 唯变所适: WAM_DIR 支持 env WAM_HOT_DIR + wam.wamHotDir 覆盖 · 默认 ~/.wam-hot
-// 详细迭代历史见 git log (v15~v17.41 凡 60+ 代 · 为学日益已化为 git 考古, 源码去芜留菁)
+// ─ v17.42 ─ 反者道之动: 逆向本源根治msgAnchor · localhost gRPC双层匹配 + http2 hook + 消息即标记使用中
+// ─ v17.42.2 ─ 去芜存菁: 切号后 state 不变量统一 · _afterSwitchSuccess · 大制不割 (8 路归一)
+// 详细迭代历史见 git log (v15~v17.42 凡 60+ 代 · 为学日益已化为 git 考古, 源码去芜留菁)
 const vscode = require("vscode");
 const crypto = require("crypto");
 const https = require("https");
 const http = require("http");
+const http2 = require("http2"); // v17.42: ConnectRPC HTTP/2 transport hook
 const net = require("net");
 const tls = require("tls");
 const fs = require("fs");
@@ -432,7 +435,7 @@ let RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 let RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.41.0"; // v17.41.0: 唯变所适 · 去除一切硬路径硬端口硬编码 · WAM_DIR/端点/模型全可配 · 适配万千公网用户环境 (道法自然 · 柔弱胜刚强)
+const WAM_VERSION = "17.42.2"; // v17.42.2: 去芜存菁 · 切号后state不变量统一 _afterSwitchSuccess (大制不割)
 
 let _store = null;
 let _sidebarProvider = null;
@@ -466,11 +469,13 @@ let MODE_FILE = path.join(WAM_DIR, "wam_mode.json");
 //       多路探针独立工作 · 任一命中即直接排队一次切号 · 零外部依赖
 //       道并行而不相悖 · 鸡犬相闻民至老死不相往来 — 各路互不通信各自为战
 // 路径:
-//   A · 网络层: monkey-patch https.request, 嗅探 codeium/windsurf cascade 流量
-//   B · 命令层: monkey-patch vscode.commands.executeCommand, 嗅探 cascade 命令
+//   A · 网络层: monkey-patch https/http.request, 嗅探 localhost gRPC + 云端 cascade 流量 (v17.42 根治: localhost双层匹配)
+//   B · 命令层: monkey-patch vscode.commands.executeCommand, 嗅探 cascade 命令 (v17.42: 逆向确认真实命令名)
 //   C · 文件层: ~/.codeium/windsurf/cascade/*.pb mtime 变化 (发送即写盘)
 //   D · 错误层: 既有 _rateLimitWatcher · 独立平行保留
+//   E · HTTP/2层: monkey-patch http2.connect, 嗅探 ConnectRPC gRPC 方法 (v17.42 新增: 覆盖 HTTP/2 transport)
 // 品德: 太上不知有之 — 零 Toast · 日志独白 · 切号延 1.5s 让流完成再切
+// v17.42: 消息发送即刻标记使用中 (不等额度变化) · 与 monitorActiveQuota 道并行而不相悖
 // ════════════════════════════════════════════════════════════════════════
 const _msgAnchor = {
   lastSendTs: 0, // 最后一次任意路径检测到的 send (用于多路去重)
@@ -484,9 +489,11 @@ const _msgAnchor = {
       last: 0,
       origHttpsReq: null,
       origHttpReq: null,
+      origFetch: null, // v17.42.1: globalThis.fetch hook 状态完整声明
     },
     command: { active: false, hits: 0, last: 0, origExec: null },
     cascade: { active: false, hits: 0, last: 0, watcher: null, dir: "" },
+    http2: { active: false, hits: 0, last: 0, origConnect: null }, // v17.42: ConnectRPC HTTP/2 transport
     ratelim: { active: false, hits: 0, last: 0 }, // 既有 _rateLimitWatcher · 仅统计
   },
 };
@@ -519,13 +526,23 @@ function _msgAnchorTrigger(source) {
     p.hits++;
     p.last = now;
   }
+  // v17.42 道法自然 · 使用中标记:
+  //   只要检测到消息发送动作 → 即刻标记当前活跃账号为"使用中"
+  //   不等额度变化 · 消息发送=账号正在消耗=使用中
+  //   与 monitorActiveQuota 的额度变化标记 相辅相成 · 道并行而不相悖
+  if (_store && _store.activeIndex >= 0) {
+    const activeAcc = _store.get(_store.activeIndex);
+    if (activeAcc) {
+      _store.markInUse(activeAcc.email);
+    }
+  }
   // 多路并发命中去重 · 窗口内仅算一次
   if (now - _msgAnchor.lastSendTs < _getMsgAnchorDedupeMs()) return;
   _msgAnchor.lastSendTs = now;
   _msgAnchor.sendCounter++;
   const everyN = Math.max(1, _getMsgAnchorEveryN());
   log(
-    `📬 msgAnchor[${source}] send#${_msgAnchor.sendCounter} | N${_msgAnchor.paths.network.hits} C${_msgAnchor.paths.command.hits} F${_msgAnchor.paths.cascade.hits} R${_msgAnchor.paths.ratelim.hits}`,
+    `📬 msgAnchor[${source}] send#${_msgAnchor.sendCounter} | N${_msgAnchor.paths.network.hits} C${_msgAnchor.paths.command.hits} F${_msgAnchor.paths.cascade.hits} H${_msgAnchor.paths.http2.hits} R${_msgAnchor.paths.ratelim.hits}`,
   );
   if (_msgAnchor.sendCounter % everyN !== 0) return; // N 轮切一次
   if (_msgAnchor.debounceTimer) clearTimeout(_msgAnchor.debounceTimer);
@@ -592,13 +609,7 @@ async function _msgAnchorDoSwitch(source) {
       }
       const sr = await switchToAccount(bestAcc.email, bestAcc.password);
       if (sr.ok) {
-        _store.activeIndex = bestI;
-        _store.switchCount++;
-        _lastSwitchTime = Date.now();
-        _store.save();
-        _quotaSnapshots.delete(bestAcc.email.toLowerCase());
-        _snapshotDirty = true;
-        _schedulePersist();
+        _afterSwitchSuccess(bestI, bestAcc.email); // v17.42.2 不变量统一
         _predictiveCandidate = _store.getBestIndex(bestI, true);
         if (_predictiveCandidate >= 0)
           _prewarmCandidateToken(_predictiveCandidate);
@@ -610,6 +621,19 @@ async function _msgAnchorDoSwitch(source) {
         ok = true;
       } else if (sr.error && /登录失败/.test(sr.error)) {
         continue;
+      } else if (
+        sr.error &&
+        /五感模式|已保留现有会话|inject failed/i.test(sr.error)
+      ) {
+        // v17.42 道法自然: 五感注入失败是系统性问题 — 重试同一机制无效
+        //   日志显示 175 次无效重试 · 每次 12s+ · 总锁时间 30min+
+        //   知止可以不殆: 立即放弃重试 · 缩短冷却 · 快速释放 _switching 锁
+        _lastInjectFail = Date.now();
+        _predictiveCandidate = -1;
+        log(
+          `  ⚠️ msgAnchor[${source}] 五感注入失败(系统性) — 不重试: ${sr.error}`,
+        );
+        break;
       } else {
         if (r < 2) {
           await new Promise((s) => setTimeout(s, _getSwitchRetryDelayMs()));
@@ -635,25 +659,38 @@ function _installNetworkAnchor() {
   try {
     st.origHttpsReq = https.request;
     st.origHttpReq = http.request;
-    const fingerprint = /codeium\.com|windsurf\.com|exafunction/i;
-    const pathHit =
+    // v17.42 反者道之动 · 逆向本源:
+    //   Windsurf extension → ConnectRPC (gRPC-Web) → localhost:PORT (本地 LS) → server.codeium.com
+    //   旧版仅匹配 codeium.com → 永远不命中 localhost 上的 Cascade gRPC 请求
+    //   根因修复: 双层匹配 — 云端宽松 + 本地精确
+    const cloudHost = /codeium\.com|windsurf\.com|exafunction/i;
+    const localHost = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/i;
+    // 精确: Windsurf LanguageServerService Cascade 发送动作 (逆向确认的 RPC 方法)
+    const grpcCascadeSend =
+      /SendUserCascadeMessage|StartCascade|HandleCascadeUserInteraction|BranchCascade|SpawnArenaMode/i;
+    // 宽松: 云端 API / 泛 cascade 流量 (兼容旧版)
+    const cloudPath =
       /Stream(Cascade|Chat|Turn)|Cascade(Request|Turn|Chat)|SubmitUser|SendMessage|PushTurn|RunTurn|\/chat\//i;
     const hook = (orig) =>
       function patched(arg0, arg1, arg2) {
         try {
           let host = "";
-          let path = "";
+          let _path = "";
           if (typeof arg0 === "string") {
             try {
               const u = new URL(arg0);
-              host = u.hostname;
-              path = u.pathname + u.search;
+              host = u.hostname + (u.port ? ":" + u.port : "");
+              _path = u.pathname + u.search;
             } catch {}
           } else if (arg0 && typeof arg0 === "object") {
             host = String(arg0.hostname || arg0.host || "");
-            path = String(arg0.path || "");
+            _path = String(arg0.path || "");
           }
-          if (fingerprint.test(host) && pathHit.test(path)) {
+          // 道并行: 云端宽松匹配 OR 本地精确 gRPC 匹配 — 任一命中即触发
+          if (
+            (cloudHost.test(host) && cloudPath.test(_path)) ||
+            (localHost.test(host) && grpcCascadeSend.test(_path))
+          ) {
             _msgAnchorTrigger("network");
           }
         } catch {}
@@ -661,8 +698,44 @@ function _installNetworkAnchor() {
       };
     https.request = hook(st.origHttpsReq);
     http.request = hook(st.origHttpReq);
+    // v17.42 突破: globalThis.fetch hook (Node 18+ / undici)
+    //   根因: ConnectRPC 使用 fetch 而非 http.request — 旧 hook 永远 N0
+    //   fetch 是全局引用 · 不存在缓存问题 · patch 后立即对所有调用者生效
+    if (typeof globalThis.fetch === "function") {
+      st.origFetch = globalThis.fetch;
+      const _cloudHost = cloudHost;
+      const _localHost = localHost;
+      const _grpcSend = grpcCascadeSend;
+      const _cloudPathRe = cloudPath;
+      globalThis.fetch = function patchedFetch(input, init) {
+        try {
+          let url = "";
+          if (typeof input === "string") url = input;
+          else if (input instanceof URL) url = input.href;
+          else if (input && typeof input === "object" && input.url)
+            url = input.url;
+          if (url) {
+            try {
+              const u = new URL(url);
+              const h = u.hostname + (u.port ? ":" + u.port : "");
+              const p = u.pathname + u.search;
+              if (
+                (_cloudHost.test(h) && _cloudPathRe.test(p)) ||
+                (_localHost.test(h) && _grpcSend.test(p))
+              ) {
+                _msgAnchorTrigger("network");
+              }
+            } catch {}
+          }
+        } catch {}
+        return st.origFetch.apply(this, arguments);
+      };
+      log("msgAnchor: path-A fetch hook active (undici/globalThis.fetch)");
+    }
     st.active = true;
-    log("msgAnchor: 🌊 path-A network installed");
+    log(
+      "msgAnchor: 🌊 path-A network installed (v17.42 localhost+cloud+fetch)",
+    );
     return true;
   } catch (e) {
     log(`msgAnchor: path-A install FAIL ${e.message}`);
@@ -675,6 +748,7 @@ function _uninstallNetworkAnchor() {
   try {
     if (st.origHttpsReq) https.request = st.origHttpsReq;
     if (st.origHttpReq) http.request = st.origHttpReq;
+    if (st.origFetch) globalThis.fetch = st.origFetch;
   } catch {}
   st.active = false;
 }
@@ -687,9 +761,14 @@ function _installCommandAnchor() {
   const st = _msgAnchor.paths.command;
   try {
     st.origExec = vscode.commands.executeCommand.bind(vscode.commands);
+    // v17.42 反者道之动: 逆向确认 Windsurf 真实命令 + 内部 type-dispatch 命令名
+    //   windsurf.setWorkspaceCascadeMap → 每次 Cascade 会话创建/切换时触发
+    //   windsurf.onShellCommand* → Agent 执行命令时触发 (间接=有对话在进行)
+    //   保留旧版宽松匹配作为兜底
     const hit =
-      /^(windsurf\.cascade|windsurf\.chat|cascade\.|windsurf\.submit|windsurf\.send)/i;
-    const skip = /^(wam\.|workbench\.|windsurf\.signIn|windsurf\.lifeguard)/i;
+      /^(windsurf\.cascade|windsurf\.chat|cascade\.|windsurf\.submit|windsurf\.send|windsurf\.setWorkspaceCascadeMap|windsurf\.onShellCommand|windsurf\.onManagedTerminal|windsurf\.updateTerminal)/i;
+    const skip =
+      /^(wam\.|workbench\.|windsurf\.signIn|windsurf\.lifeguard|windsurf\.resetProduct|windsurf\.openAcp|windsurf\.reloadAcp|windsurf\.setPortal)/i;
     vscode.commands.executeCommand = function patchedExec(cmdId, ...rest) {
       try {
         if (typeof cmdId === "string" && !skip.test(cmdId) && hit.test(cmdId)) {
@@ -775,6 +854,97 @@ function _uninstallCascadeFileAnchor() {
   st.active = false;
 }
 
+// ── Path E · HTTP/2 拦截 (prototype-level hook) ──
+// v17.42 反者道之动 · 道法自然:
+//   根因: Windsurf 在启动时已 require("http2") 并缓存了 connect 引用
+//   我们的 http2.connect = patched 只能拦截 新 session · 无法拦截已建立的
+//   突破: 直接 patch ClientHttp2Session.prototype.request
+//   原型链是共享的 — 所有 session (含启动前创建的) 调用 .request() 都走 patched 路径
+//   非侵入观察: 仅嗅探 stream header 中的 :path 伪头 · 不改写任何数据
+function _installHttp2Anchor() {
+  if (_msgAnchor.paths.http2.active) return false;
+  if (!_getMsgAnchorPathEnabled("http2")) return false;
+  const st = _msgAnchor.paths.http2;
+  try {
+    const grpcSend =
+      /SendUserCascadeMessage|StartCascade|HandleCascadeUserInteraction|BranchCascade|SpawnArenaMode/i;
+    // 策略1: 从活跃进程句柄中定位 ClientHttp2Session 原型
+    //   http2 模块不直接导出 ClientHttp2Session 类
+    //   但 process._getActiveHandles() 可以找到运行中的 session 实例
+    //   通过实例获取原型 → patch 一次 → 覆盖所有 session (含已存在的)
+    let proto = null;
+    try {
+      const handles = process._getActiveHandles
+        ? process._getActiveHandles()
+        : [];
+      for (const h of handles) {
+        if (
+          h &&
+          h.constructor &&
+          /Http2Session/i.test(h.constructor.name) &&
+          typeof h.request === "function"
+        ) {
+          proto = Object.getPrototypeOf(h);
+          break;
+        }
+      }
+    } catch {}
+    if (proto && typeof proto.request === "function") {
+      st.origProtoRequest = proto.request;
+      st._patchedProto = proto;
+      proto.request = function patchedH2ProtoRequest(headers, opts) {
+        try {
+          const p = headers && (headers[":path"] || headers["path"] || "");
+          if (typeof p === "string" && grpcSend.test(p)) {
+            _msgAnchorTrigger("http2");
+          }
+        } catch {}
+        return st.origProtoRequest.apply(this, arguments);
+      };
+      st.active = true;
+      log(
+        "msgAnchor: 🌊 path-E http2 installed (prototype-level · 覆盖所有session)",
+      );
+      return true;
+    }
+    // 策略2 fallback: 无活跃 session · 退回 connect hook (拦截未来 session)
+    st.origConnect = http2.connect;
+    http2.connect = function patchedH2Connect(authority, options) {
+      const session = st.origConnect.apply(this, arguments);
+      try {
+        const origReq = session.request.bind(session);
+        session.request = function patchedH2Request(headers, opts) {
+          try {
+            const p = headers && (headers[":path"] || headers["path"] || "");
+            if (typeof p === "string" && grpcSend.test(p)) {
+              _msgAnchorTrigger("http2");
+            }
+          } catch {}
+          return origReq.call(this, headers, opts);
+        };
+      } catch {}
+      return session;
+    };
+    st.active = true;
+    log("msgAnchor: 🌊 path-E http2 installed (connect-level fallback)");
+    return true;
+  } catch (e) {
+    log(`msgAnchor: path-E http2 install FAIL ${e.message}`);
+    return false;
+  }
+}
+function _uninstallHttp2Anchor() {
+  const st = _msgAnchor.paths.http2;
+  if (!st.active) return;
+  try {
+    if (st.origProtoRequest && st._patchedProto) {
+      st._patchedProto.request = st.origProtoRequest;
+    }
+    if (st.origConnect) http2.connect = st.origConnect;
+  } catch {}
+  st.active = false;
+}
+
 // ── 外部接口: 状态快照 (selfTest/E2E 可读) ──
 function _msgAnchorSnapshot() {
   const snap = {
@@ -799,6 +969,7 @@ function _installMessageAnchor(context) {
   _installNetworkAnchor();
   _installCommandAnchor();
   _installCascadeFileAnchor();
+  _installHttp2Anchor(); // v17.42 path-E: ConnectRPC HTTP/2 transport
   // path-D (ratelim) 由既有 _rateLimitWatcher 负责 · 在检测到切号时同步标记命中
   context.subscriptions.push({
     dispose() {
@@ -815,13 +986,14 @@ function _uninstallMessageAnchor() {
   _uninstallNetworkAnchor();
   _uninstallCommandAnchor();
   _uninstallCascadeFileAnchor();
+  _uninstallHttp2Anchor(); // v17.42 path-E
   if (_msgAnchor.debounceTimer) {
     clearTimeout(_msgAnchor.debounceTimer);
     _msgAnchor.debounceTimer = null;
   }
 }
 // ════════════════════════════════════════════════════════════════════════
-// v17.39 END · 消息锚定 · 五路道并行
+// v17.42 END · 消息锚定 · 六路道并行 (A网络+B命令+C文件+D限流+E·HTTP/2)
 // ════════════════════════════════════════════════════════════════════════
 
 // ── 性能参数 · v17.11 太上不知有之: 自适应主导, _cfg override 作为 ops 应急兜底 ──
@@ -6188,13 +6360,56 @@ function _stopTokenPool() {
 //   - 两者共享 _quotaFetchCooldown (per-account rate limit) 避免重复请求
 //   - _switching flag 是唯一互斥点: 切号时两者都暂停
 // ============================================================
+let _monitorConsecutiveFails = 0; // v17.42: 连续失败计数 (退避日志)
+
+// ════════════════════════════════════════════════════════════════════════
+// v17.42.2 · 去芜存菁 · 切号成功后不变量 · 大制不割
+// ────────────────────────────────────────────────────────────────────────
+// 病根: 7 路切号成功位 (msgAnchor/monitor/exhaust/ratelim/setMode/autoRotate/panic/wamMode)
+//       各自手写 state 更新 · v17.42.1 发现 4 路 user-driven 缺 _monitorConsecutiveFails=0
+//       一查: _lastSwitchTime 亦有 4 路未写 · 新切号后立即可被再切 (冷却失效)
+// 药方: 抽出 _afterSwitchSuccess(bestI, email) · 所有切号成功位统一调用
+//       新增路径无法遗漏 · 一处修复全链生效 · 大制不割
+// 不变量:
+//   1. _store.activeIndex = bestI         · 切换指针
+//   2. _store.switchCount++               · 累计计数
+//   3. _lastSwitchTime = Date.now()       · 冷却起点 (闸门)
+//   4. _monitorConsecutiveFails = 0       · 新号不继承旧退避
+//   5. _store.save()                      · 持久化 (v17.37 根治)
+//   6. _quotaSnapshots.delete + _schedulePersist · 快照失效
+// ════════════════════════════════════════════════════════════════════════
+function _afterSwitchSuccess(bestI, email) {
+  if (!_store || bestI < 0) return;
+  _store.activeIndex = bestI;
+  _store.switchCount++;
+  _lastSwitchTime = Date.now();
+  _monitorConsecutiveFails = 0;
+  try {
+    _store.save();
+  } catch {}
+  try {
+    _quotaSnapshots.delete(String(email || "").toLowerCase());
+  } catch {}
+  _snapshotDirty = true;
+  try {
+    _schedulePersist();
+  } catch {}
+}
 
 function _ensureEngines() {
   if (!_store || !isWamMode()) return;
   // monitor: setTimeout 链式循环 (非 setInterval, 避免堆积)
   if (!_monitorTimer) {
-    const monitorInterval = () =>
-      Date.now() < _burstUntil ? _getBurstMs() : _getMonitorFastMs();
+    // v17.42 知止可以不殆: 连续失败时递增退避 · 避免 126K 次无效请求风暴
+    //   0-3 次失败: 正常间隔 · 4-10 次: 2x · 10-30 次: 4x · 30+: 8x (最大 ~24s)
+    const monitorInterval = () => {
+      if (Date.now() < _burstUntil) return _getBurstMs();
+      const base = _getMonitorFastMs();
+      if (_monitorConsecutiveFails <= 3) return base;
+      if (_monitorConsecutiveFails <= 10) return base * 2;
+      if (_monitorConsecutiveFails <= 30) return base * 4;
+      return Math.min(base * 8, 30000); // 最大 30s
+    };
     const scheduleMonitor = () => {
       _monitorTimer = setTimeout(async () => {
         await monitorActiveQuota();
@@ -6274,13 +6489,23 @@ async function monitorActiveQuota() {
     if (!result.ok) {
       // v17.15 披褐怀玉: rate_limited 是 v7.2 设计的预期冷却 (每账号 10s 节流) · 非失败 · 不刷屏
       if (result.error !== "rate_limited") {
-        log(
-          `monitor: ${acc.email.substring(0, 20)} fetch fail: ${result.error}`,
-        );
+        _monitorConsecutiveFails = (_monitorConsecutiveFails || 0) + 1;
+        // v17.42 知止可以不殆: 连续失败递增退避 · 日志显示 126K 次无效请求
+        //   3次内正常日志 · 之后每 10 次打一次 · 避免日志风暴
+        if (
+          _monitorConsecutiveFails <= 3 ||
+          _monitorConsecutiveFails % 10 === 0
+        ) {
+          log(
+            `monitor: ${acc.email.substring(0, 20)} fetch fail: ${result.error} [×${_monitorConsecutiveFails}]`,
+          );
+        }
       }
       _monitorActive = false;
       return;
     }
+    // v17.42: 成功时重置连续失败计数
+    _monitorConsecutiveFails = 0;
 
     const emailKey = acc.email.toLowerCase();
     const prev = _quotaSnapshots.get(emailKey);
@@ -6373,13 +6598,7 @@ async function monitorActiveQuota() {
                   bestAcc.password,
                 );
                 if (switchResult.ok) {
-                  _store.activeIndex = bestI;
-                  _store.switchCount++;
-                  _lastSwitchTime = Date.now();
-                  _store.save();
-                  _quotaSnapshots.delete(bestAcc.email.toLowerCase());
-                  _snapshotDirty = true;
-                  _schedulePersist();
+                  _afterSwitchSuccess(bestI, bestAcc.email); // v17.42.2 不变量统一
                   _burstUntil = Date.now() + _getBurstDuration();
                   _consecutiveChanges = 0;
                   _predictiveCandidate = _store.getBestIndex(bestI, true);
@@ -6403,6 +6622,19 @@ async function monitorActiveQuota() {
                     `auto-switch FAIL#${_retry}: ${switchResult.error} — 尝试下一个`,
                   );
                   continue; // v14.1: 登录失败→重试下一个号
+                } else if (
+                  switchResult.error &&
+                  /五感模式|已保留现有会话|inject failed/i.test(
+                    switchResult.error,
+                  )
+                ) {
+                  // v17.42 知止可以不殆: 五感注入失败是系统性 · 不重试
+                  log(
+                    `auto-switch 五感注入失败(系统性) — 不重试: ${switchResult.error}`,
+                  );
+                  _lastInjectFail = Date.now();
+                  _predictiveCandidate = -1;
+                  break;
                 } else {
                   // 注入失败重试一次(3s后), p3已内含5s等待·外层无需长等
                   // v17.9 软编码: 重试延迟可通过 wam.switchRetryDelayMs 覆盖
@@ -6522,16 +6754,10 @@ async function monitorActiveQuota() {
                   bestAcc.password,
                 );
                 if (sr.ok) {
-                  _store.activeIndex = bestI;
-                  _store.switchCount++;
-                  _lastSwitchTime = Date.now();
+                  _afterSwitchSuccess(bestI, bestAcc.email); // v17.42.2 不变量统一
                   _predictiveCandidate = _store.getBestIndex(bestI, true);
                   if (_predictiveCandidate >= 0)
                     _prewarmCandidateToken(_predictiveCandidate);
-                  _store.save();
-                  _quotaSnapshots.delete(bestAcc.email.toLowerCase());
-                  _snapshotDirty = true;
-                  _schedulePersist();
                   _burstUntil = Date.now() + _getBurstDuration();
                   setTimeout(() => monitorActiveQuota(), 1500);
                   vscode.window.showInformationMessage(
@@ -6544,6 +6770,17 @@ async function monitorActiveQuota() {
                     `exhaust-switch FAIL#${_retry}: ${sr.error} — 尝试下一个`,
                   );
                   continue;
+                } else if (
+                  sr.error &&
+                  /五感模式|已保留现有会话|inject failed/i.test(sr.error)
+                ) {
+                  // v17.42 知止可以不殆: 五感注入失败是系统性 · 不重试
+                  log(
+                    `exhaust-switch 五感注入失败(系统性) — 不重试: ${sr.error}`,
+                  );
+                  _lastInjectFail = Date.now();
+                  _predictiveCandidate = -1;
+                  break;
                 } else {
                   // 注入失败重试一次(3s后)
                   // v17.9 软编码: 重试延迟可通过 wam.switchRetryDelayMs 覆盖
@@ -7064,9 +7301,7 @@ async function handleWebviewMessage(msg) {
             try {
               const result = await switchToAccount(acc.email, acc.password);
               if (result.ok) {
-                _store.activeIndex = bestI;
-                _store.switchCount++;
-                _store.save();
+                _afterSwitchSuccess(bestI, acc.email); // v17.42.2 不变量统一
                 vscode.window.showInformationMessage(
                   `WAM: WAM模式启动，自动登录 ${result.account}`,
                 );
@@ -7666,12 +7901,7 @@ async function doAutoRotate(store) {
   try {
     const result = await switchToAccount(acc.email, acc.password);
     if (result.ok) {
-      store.activeIndex = bestI;
-      store.switchCount++;
-      _quotaSnapshots.delete(acc.email.toLowerCase());
-      _snapshotDirty = true;
-      _schedulePersist();
-      store.save();
+      _afterSwitchSuccess(bestI, acc.email); // v17.42.2 不变量统一
       const droughtTag = drought ? " [干旱·D轮换]" : "";
       vscode.window.showInformationMessage(
         `WAM: 智能轮转到 ${result.account} (${result.ms}ms)${droughtTag}`,
@@ -8580,13 +8810,8 @@ function activate(context) {
       try {
         const result = await switchToAccount(acc.email, acc.password);
         if (result.ok) {
-          _store.activeIndex = bestI;
-          _store.switchCount++;
+          _afterSwitchSuccess(bestI, acc.email); // v17.42.2 不变量统一
           _writeInstanceClaim(acc.email);
-          _quotaSnapshots.delete(acc.email.toLowerCase());
-          _snapshotDirty = true;
-          _schedulePersist();
-          _store.save();
           vscode.window.showInformationMessage(
             `WAM: 紧急切换到 ${result.account} (${result.ms}ms)`,
           );
@@ -8659,9 +8884,7 @@ function activate(context) {
           try {
             const result = await switchToAccount(acc.email, acc.password);
             if (result.ok) {
-              _store.activeIndex = bestI;
-              _store.switchCount++;
-              _store.save();
+              _afterSwitchSuccess(bestI, acc.email); // v17.42.2 不变量统一
               vscode.window.showInformationMessage(
                 `WAM: WAM模式启动，自动登录 ${result.account}`,
               );
@@ -8771,16 +8994,10 @@ function activate(context) {
           try {
             const sr = await switchToAccount(bestAcc.email, bestAcc.password);
             if (sr.ok) {
-              _store.activeIndex = bestI;
-              _store.switchCount++;
-              _lastSwitchTime = Date.now();
+              _afterSwitchSuccess(bestI, bestAcc.email); // v17.42.2 不变量统一
               _predictiveCandidate = _store.getBestIndex(bestI, true);
               if (_predictiveCandidate >= 0)
                 _prewarmCandidateToken(_predictiveCandidate);
-              _store.save();
-              _quotaSnapshots.delete(bestAcc.email.toLowerCase());
-              _snapshotDirty = true;
-              _schedulePersist();
               vscode.window.showInformationMessage(
                 `WAM: 🚨 Rate-limit拦截 → 已无感切换到 ${sr.account} (${sr.ms}ms)`,
               );
@@ -8800,8 +9017,8 @@ function activate(context) {
     log(`v8: rate-limit interceptor failed: ${e.message}`);
   }
 
-  // ── v17.39 · 消息锚定 · 五路道并行 · 反者道之动 ──
-  // 跳出额度轮询表象, 直接锚定"消息发送"动作本身
+  // ── v17.42 · 消息锚定 · 六路道并行 · 反者道之动 ──
+  // 逆向本源: localhost gRPC双层匹配 + http2 hook + 消息即标记使用中
   // 外部 API 被 ban/限流/迁移皆不影响 · 任一路命中即立即切号
   try {
     _installMessageAnchor(context);
