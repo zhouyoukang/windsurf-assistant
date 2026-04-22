@@ -1,5 +1,5 @@
 /**
- * WAM · rt-flow E2E test · v17.42.7 · 锁🔒全链贯通 + 一键导出 (叠加 v17.42.6 env 自净 + v17.42.5 五刀贯通)
+ * WAM · rt-flow E2E test · v17.42.8 · 同步隔离死代理 env + undici Dispatcher 重置 (叠加 v17.42.7 锁🔒贯通 + v17.42.6 env 自净 + v17.42.5 五刀贯通)
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.42.7", `version=17.42.7 (got ${pkg.version})`);
+  assert(pkg.version === "17.42.8", `version=17.42.8 (got ${pkg.version})`);
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -102,7 +102,7 @@ section("L2: WAM_VERSION alignment");
 const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
-  assert(verMatch[1] === "17.42.7", `WAM_VERSION=17.42.7 (got ${verMatch[1]})`);
+  assert(verMatch[1] === "17.42.8", `WAM_VERSION=17.42.8 (got ${verMatch[1]})`);
 }
 
 // ══ L3: Core classes & functions ══
@@ -1041,26 +1041,28 @@ const envKeysExpected = [
 for (const k of envKeysExpected) {
   assert(code.includes(`"${k}"`), `_purgeDeadEnvProxy 覆盖 env key '${k}'`);
 }
+// v17.42.8 语义升级: delete env 移至 _quarantineEnvProxySync · 用 `k` 变量名
 assert(
-  /delete\s+process\.env\[\s*key\s*\]/.test(code),
-  "_purgeDeadEnvProxy 对死代调用 delete process.env[key] (仅本进程生效)",
+  /delete\s+process\.env\[\s*k(ey)?\s*\]/.test(code),
+  "env 删除语义保留 (delete process.env[k/key] · v17.42.8 同步化)",
 );
 assert(
   /await\s+_tcpProbe\(\s*host\s*,\s*port\s*,\s*2000\s*\)/.test(code),
-  "_purgeDeadEnvProxy 调用 _tcpProbe 2s 超时",
+  "TCP probe 2s 超时 (v17.42.8 在 _verifyAndRestoreEnvProxy 内)",
 );
 assert(
-  code.includes("env-proxy purge:") && code.includes("env-proxy keep:"),
-  "_purgeDeadEnvProxy 有 purge/keep 日志 (可审计)",
+  /env-proxy\s+(purge|quarantine):/i.test(code) &&
+    /env-proxy\s+(keep|restore):/i.test(code),
+  "env-proxy 审计日志 (v17.42.8 purge↔quarantine · keep↔restore)",
 );
 assert(
   code.includes("_invalidateProxyCache()") &&
-    /if\s*\(\s*purged\s*>\s*0\s*\)\s*_invalidateProxyCache\(\)/.test(code),
-  "_purgeDeadEnvProxy 清完死代后 · 必 _invalidateProxyCache() 让 _detectProxy 重扫",
+    /_invalidateProxyCache\(\)/.test(code),
+  "清死代后必 _invalidateProxyCache() 让 _detectProxy 重扫",
 );
 assert(
   code.includes("seen.has(k)") && code.includes("seen.set(k"),
-  "_purgeDeadEnvProxy 使用 seen Map 去重 (同一 host:port 只验一次)",
+  "seen Map 去重 (同一 host:port 只验一次)",
 );
 
 // —— activate() 在起点即注入 ——
@@ -1069,17 +1071,24 @@ const actMatch = code.match(
 );
 assert(actMatch, "activate(context) 函数存在");
 if (actMatch) {
+  // v17.42.8: 同步 quarantine 第一行 + 异步 verifyAndRestore fire-and-forget
   assert(
-    /_purgeDeadEnvProxy\(\)\.catch\(/.test(actMatch[1]),
-    "activate() 早期 fire-and-forget 调用 _purgeDeadEnvProxy().catch(...)",
+    /_quarantineEnvProxySync\(\)/.test(actMatch[1]) &&
+      /_verifyAndRestoreEnvProxy\(\)\.catch\(/.test(actMatch[1]),
+    "activate() 含 _quarantineEnvProxySync() (同步) + _verifyAndRestoreEnvProxy().catch() (异步)",
   );
-  // 验证是在 log(`activate v...`) 之后, globalStorage 之前 (最早网络 op 之前)
+  // 验证 quarantine 在 globalStorage 之前 (最早网络 op 之前)
   const actStart = code.indexOf("function activate(context) {");
-  const purgeIdx = code.indexOf("_purgeDeadEnvProxy().catch", actStart);
+  const qIdx = code.indexOf("_quarantineEnvProxySync()", actStart);
+  const vIdx = code.indexOf("_verifyAndRestoreEnvProxy()", actStart);
   const gsPathIdx = code.indexOf("context.globalStorageUri", actStart);
   assert(
-    purgeIdx > actStart && purgeIdx < gsPathIdx,
-    "_purgeDeadEnvProxy 注入位置: activate 起点之后 · globalStorage 初始化之前 (最早网络 op 之前)",
+    qIdx > actStart && qIdx < gsPathIdx,
+    "_quarantineEnvProxySync 注入位置: activate 起点 · globalStorage 初始化之前",
+  );
+  assert(
+    vIdx > qIdx && vIdx < gsPathIdx,
+    "_verifyAndRestoreEnvProxy 紧随 quarantine · 也在 globalStorage 之前",
   );
 }
 
@@ -1205,10 +1214,135 @@ assert(
   "WAM_VERSION 注释锚 '17.42.7: 锁🔒 全链[路]贯通'",
 );
 
+// ══ L25: v17.42.8 同步隔离死代理 env + undici Dispatcher 重置 ══
+section(
+  "L25: v17.42.8 sync quarantine env proxy + undici global Dispatcher reset",
+);
+
+// —— 核心常量/变量 ——
+assert(
+  /_ENV_PROXY_KEYS\s*=\s*\[/.test(code),
+  "_ENV_PROXY_KEYS 数组定义 (env 代理变量名清单)",
+);
+assert(
+  /"HTTPS_PROXY"[\s\S]{0,10}"https_proxy"[\s\S]{0,10}"HTTP_PROXY"[\s\S]{0,10}"http_proxy"[\s\S]{0,10}"ALL_PROXY"[\s\S]{0,10}"all_proxy"/.test(
+    code,
+  ),
+  "_ENV_PROXY_KEYS 含 6 个变体 (大小写 + 协议分 3×2)",
+);
+assert(
+  /_savedEnvProxy\s*=\s*Object\.create\(null\)/.test(code),
+  "_savedEnvProxy 备份表 (Object.create(null) 避 prototype 污染)",
+);
+
+// —— _quarantineEnvProxySync 同步函数 ——
+assert(
+  /function\s+_quarantineEnvProxySync\s*\(\s*\)/.test(code),
+  "_quarantineEnvProxySync() 同步函数定义",
+);
+// 关键: 必须同步 delete env + 同步 setGlobalDispatcher
+const qFn = code.substring(
+  code.indexOf("function _quarantineEnvProxySync"),
+  code.indexOf("function _verifyAndRestoreEnvProxy"),
+);
+assert(
+  qFn.includes("delete process.env[k]"),
+  "_quarantineEnvProxySync 同步 delete process.env[k]",
+);
+assert(
+  qFn.includes("_savedEnvProxy[k]") && qFn.includes("= v"),
+  "_quarantineEnvProxySync 备份原值到 _savedEnvProxy",
+);
+assert(
+  qFn.includes('require("undici")') || qFn.includes("require('undici')"),
+  "_quarantineEnvProxySync 同步 require('undici')",
+);
+assert(
+  qFn.includes("setGlobalDispatcher(new undici.Agent())") ||
+    /setGlobalDispatcher\(new\s+undici\.Agent\(\)\)/.test(qFn),
+  "_quarantineEnvProxySync 调 undici.setGlobalDispatcher(new undici.Agent()) 重置 Dispatcher",
+);
+assert(
+  qFn.includes("try {") && qFn.includes("} catch {"),
+  "_quarantineEnvProxySync require('undici') 包 try/catch (老 Node 无 undici 兜底)",
+);
+
+// —— _verifyAndRestoreEnvProxy 异步验活 + 回写 ——
+assert(
+  /async\s+function\s+_verifyAndRestoreEnvProxy\s*\(\s*\)/.test(code),
+  "_verifyAndRestoreEnvProxy() 异步函数定义",
+);
+const vFn = code.substring(
+  code.indexOf("async function _verifyAndRestoreEnvProxy"),
+  code.indexOf("// v17.42.8 兼容别名"),
+);
+assert(
+  vFn.includes("_tcpProbe(host, port, 2000)"),
+  "_verifyAndRestoreEnvProxy 2s TCP probe",
+);
+assert(
+  vFn.includes("process.env[key] = val"),
+  "_verifyAndRestoreEnvProxy 活代理回写 process.env[key] = val",
+);
+assert(
+  vFn.includes("env-proxy restore") && vFn.includes("env-proxy quarantine"),
+  "_verifyAndRestoreEnvProxy 分类日志 restore / quarantine",
+);
+assert(
+  vFn.includes("_invalidateProxyCache()"),
+  "_verifyAndRestoreEnvProxy 死代理后 _invalidateProxyCache",
+);
+
+// —— _purgeDeadEnvProxy 兼容别名 ——
+assert(
+  /async\s+function\s+_purgeDeadEnvProxy\s*\(\s*\)/.test(code),
+  "_purgeDeadEnvProxy() 向后兼容别名保留",
+);
+
+// —— activate 第一行同步调用 _quarantineEnvProxySync ——
+const actStart = code.indexOf("function activate(context) {");
+const actFirst200 = code.substring(actStart, actStart + 600);
+assert(
+  actFirst200.includes("_quarantineEnvProxySync()"),
+  "activate() 前 600 字符内调用 _quarantineEnvProxySync() (第一行同步)",
+);
+assert(
+  actFirst200.indexOf("_quarantineEnvProxySync()") <
+    actFirst200.indexOf("_detectProductName()"),
+  "_quarantineEnvProxySync() 必须在 _detectProductName() 之前 (即 activate 最早)",
+);
+assert(
+  /_verifyAndRestoreEnvProxy\(\)\.catch\(/.test(code),
+  "activate 调 _verifyAndRestoreEnvProxy().catch() fire-and-forget",
+);
+
+// —— v17.42.8 版本描述锚 ——
+assert(
+  /17\.42\.8:?\s*同步隔离死代理\s*env/.test(code),
+  "WAM_VERSION 注释锚 '17.42.8: 同步隔离死代理 env'",
+);
+assert(
+  /all_channels_failed/.test(code) &&
+    /Devin\s+Cloud\s+is\s+disconnected|Devin Cloud disconnected/.test(code),
+  "v17.42.8 根因注释含 all_channels_failed + Devin Cloud disconnected 双症锚",
+);
+assert(
+  /Electron\s+Chromium\s+net|undici[\s\S]{0,50}ProxyAgent|ProxyAgent[\s\S]{0,50}cache/.test(
+    code,
+  ),
+  "v17.42.8 根因注释锚 ProxyAgent cache 原理",
+);
+
+// —— 历史锚点保留 (v17.42.6 锚点 — 不破坏) ——
+assert(
+  /17\.42\.6:?\s*死代理\s*env\s*自净/.test(code),
+  "v17.42.6 历史锚点保留 '死代理 env 自净' (向后兼容/审计)",
+);
+
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.42.7 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.42.8 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);

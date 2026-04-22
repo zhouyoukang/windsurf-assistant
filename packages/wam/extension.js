@@ -435,7 +435,7 @@ let RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 let RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.42.7"; // v17.42.7: 锁🔒 全链路贯通 + 一键导出 — 根治 stale _predictiveCandidate 绕过 skipAutoSwitch 的 bug (msgAnchor/monitor/exhaust 三路均经 _isValidAutoTarget 四辨); toggleSkip 即时联动 invalidate; 新增 copyAllAccounts 批量剪贴板导出
+const WAM_VERSION = "17.42.8"; // v17.42.8: 同步隔离死代理 env + undici 全局 Dispatcher 重置 — 根治 all_channels_failed/Devin Cloud disconnected 双症共源: Explorer session env 污染 HTTPS_PROXY=141:17890 → Windsurf 继承 → Electron/undici 首 fetch 即锁定 ProxyAgent · 后续 delete env 无效; 治法: activate 第一行同步 quarantine env 六 key (内存备份 · 待 TCP 验活再回写活者) + setGlobalDispatcher(new Agent()) 重置已 cache 的 ProxyAgent · 双保险 · 太上不知有之
 
 let _store = null;
 let _sidebarProvider = null;
@@ -3215,13 +3215,24 @@ function _isValidAutoTarget(i) {
   return true;
 }
 
-// ── v17.42.6: 死代理 env 自净 — 反者道之动 · 太上不知有之 ──
-// 根因: 用户可能保留旧 HTTPS_PROXY env (如 192.168.31.141:17890) 指向已停机的代理
-//   ① _httpsPost/_httpsPostRaw 信任 _getSystemProxy() 返回 → 盲连死代理
+// ── v17.42.8: 同步隔离死代理 env + undici Dispatcher 重置 — 反者道之动 · 渊兮似万物之宗 ──
+// 上溯 v17.42.6: 死代理 env 自净 (异步 2s TCP probe 窗口 · 已升级)
+//   v17.42.6 根因注释保留 (E2E 锚点): ① _httpsPost/_httpsPostRaw 信任 _getSystemProxy() 返回 → 盲连死代理
 //   ② Node 22+ https.request 原生读 env.HTTPS_PROXY → _skipAutoProxy 挡不住
-//   ③ 新加账号 (无 session cache) 走 login → 四路全败 → verify-gate 标失败 → 无额度
-// 治法: 启动时 TCP 连通性验证 env proxy · 死则剔除 (仅此 Node 进程生效 · 不改系统)
-//   单次验证 2s timeout · 活的保留 · 死的删除 · 由 _detectProxy 重新 scan localhost 兜底
+// v17.42.8 症: WAM all_channels_failed + Devin Cloud is disconnected (Windsurf 官方) 双症共源
+// v17.42.8 根因链 (庖丁解牛):
+//   ① Explorer session env 污染: 过去某时 setx HTTPS_PROXY=141:17890 · 写 HKCU\Environment
+//   ② winlogon 登录时已 inherit · 清 registry 后 · 当前 session 仍保留
+//   ③ Windsurf/所有子进程 inherit 此 env · 启动瞬间 env 含死代理
+//   ④ Electron Chromium net stack + Node undici 首次 fetch 时即锁定 ProxyAgent → "PROXY 141:17890"
+//   ⑤ v17.42.6 async fire-and-forget purge: TCP probe 2s 阻塞 · activate 后 2s 才 delete env
+//      但此时 undici ProxyAgent 已 cache · delete env 无效 · 错误持续
+// v17.42.8 治法 (太上不知有之):
+//   ① activate 第一行 _quarantineEnvProxySync(): 同步遍历 env 六 key · 立即 delete · 内存备份
+//      零秒窗口 · 早于任何 fetch/https.request
+//   ② setGlobalDispatcher(new undici.Agent()): 重置已 cache 的 ProxyAgent
+//      无论 WAM activate 早晚于官方扩展 · 皆清
+//   ③ 后续 _verifyAndRestoreEnvProxy(): TCP 探活 · 活则回写 env (不让用户真代理丢失)
 function _tcpProbe(host, port, timeoutMs) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
@@ -3251,20 +3262,59 @@ function _tcpProbe(host, port, timeoutMs) {
   });
 }
 
-async function _purgeDeadEnvProxy() {
-  const envKeys = [
-    "HTTPS_PROXY",
-    "https_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-    "ALL_PROXY",
-    "all_proxy",
-  ];
-  const seen = new Map(); // "host:port" -> boolean (verified alive)
-  let purged = 0;
-  for (const key of envKeys) {
-    const val = process.env[key];
-    if (!val) continue;
+const _ENV_PROXY_KEYS = [
+  "HTTPS_PROXY",
+  "https_proxy",
+  "HTTP_PROXY",
+  "http_proxy",
+  "ALL_PROXY",
+  "all_proxy",
+];
+const _savedEnvProxy = Object.create(null); // 隔离期暂存 · 待 TCP 验活后回写
+
+// v17.42.8: 同步隔离 — activate 第一行调用 · 零秒窗口 · 早于任何 fetch/https.request
+//   返回隔离数量 · 无 TCP probe (不阻塞) · 纯内存操作
+//   同步重置 undici 全局 Dispatcher: 若已 cache ProxyAgent (本扩展或其它扩展先 activate 造成)
+//     则用新 Agent 替换 · 后续 fetch 都走无代理 agent · 双保险
+function _quarantineEnvProxySync() {
+  let n = 0;
+  for (const k of _ENV_PROXY_KEYS) {
+    const v = process.env[k];
+    if (v) {
+      _savedEnvProxy[k] = v;
+      delete process.env[k];
+      n++;
+    }
+  }
+  // 重置 undici 全局 Dispatcher (Node 18+ 内置 undici · require 不会失败)
+  //   如已被其它扩展先 activate 建 ProxyAgent · 此处立即替换
+  try {
+    const undici = require("undici");
+    if (undici && typeof undici.setGlobalDispatcher === "function") {
+      undici.setGlobalDispatcher(new undici.Agent());
+    }
+  } catch {
+    // 某些环境无 undici (老 Node) · 无妨 · 仅失去双保险 · env 隔离仍生效
+  }
+  return n;
+}
+
+// v17.42.8: 异步验活 + 恢复活代理 — activate 注入后 fire-and-forget
+//   对 _savedEnvProxy 中每个暂存代理做 TCP probe (2s)
+//   活: 回写 process.env · 日志 restore
+//   死: 保持隔离 · 日志 quarantine
+//   与老 _purgeDeadEnvProxy 行为对齐: 若有死代 · _invalidateProxyCache 让 _detectProxy 重扫
+async function _verifyAndRestoreEnvProxy() {
+  const keys = Object.keys(_savedEnvProxy);
+  if (keys.length === 0) {
+    log(`env-proxy: 启动时 env 无代理变量 · 无需验活`);
+    return { restored: 0, quarantined: 0 };
+  }
+  const seen = new Map(); // "host:port" -> boolean
+  let restored = 0,
+    quarantined = 0;
+  for (const key of keys) {
+    const val = _savedEnvProxy[key];
     let host, port;
     try {
       const u = new URL(val);
@@ -3277,7 +3327,10 @@ async function _purgeDeadEnvProxy() {
         port = parseInt(m[2]);
       }
     }
-    if (!host || !port) continue;
+    if (!host || !port) {
+      delete _savedEnvProxy[key];
+      continue;
+    }
     const k = `${host}:${port}`;
     let alive;
     if (seen.has(k)) {
@@ -3286,16 +3339,32 @@ async function _purgeDeadEnvProxy() {
       alive = await _tcpProbe(host, port, 2000);
       seen.set(k, alive);
     }
-    if (!alive) {
-      delete process.env[key];
-      purged++;
-      log(`env-proxy purge: ${key}=${val} (dead · TCP timeout/refused)`);
+    if (alive) {
+      process.env[key] = val; // 回写活代理
+      restored++;
+      log(`env-proxy restore: ${key}=${val} (TCP OK · 活 · 已回写 env)`);
     } else {
-      log(`env-proxy keep:  ${key}=${val} (TCP OK)`);
+      quarantined++;
+      log(
+        `env-proxy quarantine: ${key}=${val} (dead · TCP timeout/refused · 保持隔离)`,
+      );
     }
+    delete _savedEnvProxy[key];
   }
-  if (purged > 0) _invalidateProxyCache();
-  return purged;
+  if (quarantined > 0) _invalidateProxyCache();
+  return { restored, quarantined };
+}
+
+// v17.42.8 兼容别名: 老名字 _purgeDeadEnvProxy 保留 · 指向新实现
+//   外部若有其它入口调此 (搜无 · 仅 activate) · 仍可工作
+async function _purgeDeadEnvProxy() {
+  // 向后兼容: 若未经过同步 quarantine (例如测试单独 require 调此) · 先做同步 quarantine
+  if (Object.keys(_savedEnvProxy).length === 0) {
+    const hasEnv = _ENV_PROXY_KEYS.some((k) => !!process.env[k]);
+    if (hasEnv) _quarantineEnvProxySync();
+  }
+  const { quarantined } = await _verifyAndRestoreEnvProxy();
+  return quarantined;
 }
 
 // ── v15.1: Bridge就绪信号 + 自动确保 — 道法自然·有桥才走桥 ──
@@ -8876,7 +8945,14 @@ async function selfTest() {
 // 激活 — v14.0 · 道法自然 · 万法归宗 · 反者道之动
 // ============================================================
 function activate(context) {
-  // \u9053\u6cd5\u81ea\u7136: \u52a8\u6001\u521d\u59cb\u5316\u4ea7\u54c1\u540d\u548c\u6570\u636e\u76ee\u5f55
+  // ── v17.42.8: 同步隔离死代理 env + undici Dispatcher 重置 — 必须第一行 ──
+  // 为何必须最先: Electron Chromium net + Node undici 首次 fetch 即锁 ProxyAgent
+  //   v17.42.6 异步 purge 有 2s TCP probe 窗口 · 窗口内 ProxyAgent 已被 cache · delete env 无效
+  //   v17.42.8 同步 quarantine: 零秒窗口 · 早于任何 fetch/https.request · 内存备份原值
+  //   同时 setGlobalDispatcher(new undici.Agent()) 重置已 cache 的 ProxyAgent (防其它扩展先 activate 已中毒)
+  const _qN = _quarantineEnvProxySync();
+
+  // 道法自然: 动态初始化产品名和数据目录
   PRODUCT_NAME = _detectProductName();
   DATA_DIR = _resolveDataDir(PRODUCT_NAME);
   // v17.41 唯变所适: WAM_DIR 动态解析 · 派生路径随之更新
@@ -8885,12 +8961,18 @@ function activate(context) {
   log(
     `activate v${WAM_VERSION}-\u9053\u6cd5\u81ea\u7136 — inst=${_instanceId} product=${PRODUCT_NAME} dataDir=${DATA_DIR} \u7edf\u4e00\u4ee3\u7406\u63cf\u8ff0\u7b26\u00b7\u96f6\u786e\u5b9a\u672c\u6e90`,
   );
+  if (_qN > 0) {
+    log(
+      `env-proxy quarantine: 同步隔离 ${_qN} 个 env 代理变量 + undici Dispatcher 已重置 (异步 TCP 验活中)`,
+    );
+  }
 
-  // ── v17.42.6: 死代理 env 自净 — 所有网络 op 启动前先净化 env ──
-  // fire-and-forget: 异步 TCP 验活 2s · 不阻塞 activate · 结果在 log 中可见
-  //   若 env 中 HTTPS_PROXY 指向已停机代理 (如 192.168.31.141:17890) · 立即剔除
-  //   剔除仅对本 Node 进程生效 · 不污染用户系统配置 · _detectProxy 自扫 localhost 兜底
-  _purgeDeadEnvProxy().catch((e) => log(`env-proxy purge err: ${e.message}`));
+  // ── v17.42.8 异步 TCP 验活 + 活代理回写 — fire-and-forget ──
+  //   活: 回写 env (不损失用户真代理)
+  //   死: 保持隔离 (_detectProxy 自扫 localhost/gateway 兜底)
+  _verifyAndRestoreEnvProxy().catch((e) =>
+    log(`env-proxy verify err: ${e.message}`),
+  );
 
   const gsPath =
     context.globalStorageUri?.fsPath ||
