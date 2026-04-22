@@ -1,5 +1,155 @@
 # Changelog
 
+## v17.42.13 · 道冲用之不盈 · 渊兮似万物之宗 · 适应所有用户/环境/变化
+
+> 道冲, 而用之或不盈. 渊兮, 似万物之宗. — 《道德经·四》
+>
+> 兵无常势, 水无常形, 能因敌变化而取胜者, 谓之神.
+
+### 病根 (七破口深审 · 以神遇不以目视)
+
+v17.42.12 已具八代适应性底座 (`_cfg` 三级兜底 · `_detectProductName` · `_resolveDataDir` · `_adaptive` RTT P95 学习 · 代理/端点/注入命令全软盖). **七道破口仍使核心刚则断**:
+
+| # | 破口 | 违背原则 | 风险 |
+|---|------|----------|------|
+| 1 | `activate()` 无外层 try/catch · 任一行抛异常插件哑火 | 违**曲则全** | 🔴 高 |
+| 2 | `WAM_DIR = ~/.wam-hot` 单路径 · 只读/沙箱 FS 即崩 | 违**水无常形** | 🟠 中 |
+| 3 | 多用户同机共享 `~/.wam-hot` · instance 锁路径冲突 | 违**各安其位** | 🟠 中 |
+| 4 | `_detectProductName` 取 `appName` 首词 · 空/单字无兜底 | 违**以神遇不以目视** | 🟡 低 |
+| 5 | `_resolveDataDir` 不存在即退首选 · 下游写盘无回落 | 违**利而不害** | 🟡 低 |
+| 6 | Firebase API key 唯一硬编码 · Google 轮换即死 | 违**兵无常势** | 🟡 低 · 已延 |
+| 7 | 认证系统二元固化 `firebase\|devin` · rebrand 再手术 | 违**反者道之动** | 🟡 低 · 已延 |
+
+**本版聚焦破口 1-4 一次贯通** (少则得 · 行小变不失大常).
+
+### 药方 (渊兮似万物之宗 · 四级适应)
+
+**① `_isPathWritable(p)` 路径可写性探测** (曲则全 · 不可写即降级)
+
+- `fs.mkdirSync({recursive:true})` 不存在即尝创建
+- `.wam_write_probe` 探针写+删, 任一异常→返回 false
+- 任意兜底路径用前必探
+
+**② `_getUserDiscriminator()` 用户隔离标识** (各安其位)
+
+- `os.userInfo().username` 优先 → `env.USERNAME|USER|LOGNAME` 兜底 → `"shared"` 末路
+- 清洗 `[^A-Za-z0-9_-]` · 截至 32 字
+
+**③ `_resolveWamDir(context)` 六级兜底** (渊兮似万物之宗)
+
+| 级 | 路径 | 用途 |
+|---|------|------|
+| 1 | `env.WAM_HOT_DIR` | 运维最高权 |
+| 2 | cfg `wam.wamHotDir` | 用户权 |
+| 3 | `~/.wam-hot` (legacy 沿用) | 老数据零迁移 |
+| 4 | `~/.wam-hot/<user>` (新默认) | 多用户共机不冲突 |
+| 5 | `context.globalStorageUri/wam-hot` | 沙箱/只读盘兜底 |
+| 6 | `tmpdir()/wam-hot-<user>` | 末路单会话 |
+
+- 每级调 `_isPathWritable` · 不可写即跳
+- 级3 向后完全兼容 · 老 `~/.wam-hot` 存在即沿用, 不强迁
+
+**④ `_detectProductName()` 三级强化** (以神遇不以目视)
+
+| 优先 | 源 | 过滤 |
+|------|-----|------|
+| 1 | cfg `wam.productName` | 非空+trim |
+| 2 | `vscode.env.appName` 首词 | 含字母/中文 (排纯空白/符号) |
+| **3 新** | `process.execPath` basename | 排除 node/electron/code/code-oss 纯 runtime |
+
+**⑤ `_resolveDataDir()` 多 fork 级联** (水无常形)
+
+- 候选链: `productName` + `[Windsurf, Cursor, Trae, Code]` 全尝试
+- linux 加 `XDG_CONFIG_HOME` 优先
+- `home=""` 异常兜底
+
+**⑥ `activate()` 四级容错** (大器晚成)
+
+```
+let _activateDegraded = null;
+const _activateErrs = [];
+try { PRODUCT_NAME = _detectProductName() || "Windsurf"; } catch(e) { _activateErrs.push(...); }
+try { DATA_DIR = _resolveDataDir(PRODUCT_NAME) || ""; } catch(e) { _activateErrs.push(...); }
+try {
+  WAM_DIR = _resolveWamDir(context);
+  _deriveWamPaths();
+  if (!_isPathWritable(WAM_DIR)) {
+    _activateDegraded = "storage-readonly";  // 五级兜底后仍不可写→降级为纯内存
+  }
+} catch(e) { _activateDegraded ||= "storage-partial"; _activateErrs.push(...); }
+try { log(...); } catch {}
+```
+
+**降级状态机**:
+
+| 状态 | 含义 | 行为 |
+|------|------|------|
+| `null` | 全活 (99%) | 正常运行 |
+| `storage-readonly` | 五级兜底后仍不可写 | 内存模式, 重启后重试 |
+| `storage-partial` | 解析异常但部分成功 | 沿用默认, 继续初始化 |
+
+### 损 (为道日损)
+
+| 位置 | 改动 | 行数 |
+|------|------|------|
+| `@extension.js:10-12` | 头注释新增 v17.42.13 里程碑 | +3 |
+| `@extension.js:24-28` | 新块 "道冲·用之或不盈" 哲学注释 | +5 |
+| `@extension.js:30-64` | `_detectProductName()` 三级强化 | ~35 改 |
+| `@extension.js:66-125` | `_resolveDataDir()` 多 fork + XDG + 空候选兜底 | ~60 改 |
+| `@extension.js:437-478` | **新** `_isPathWritable(p)` + `_getUserDiscriminator()` | +42 |
+| `@extension.js:480-532` | `_resolveWamDir(context)` 六级兜底 (重写) | ~50 改 |
+| `@extension.js:553-560` | `WAM_VERSION = "17.42.13"` + 历史锚点 | ~5 改 |
+| `@extension.js:9225-9270` | `activate()` 四段 try/catch + 降级标记 | ~45 改 |
+| `@package.json:5` | `version: "17.42.13"` | +0 |
+| `@_wam_e2e.js:+1552-1702` | **新** L28 层 · 28 断言 | +151 |
+| 同步 | `@wam-dao/vendor/wam/extension.js` + `package.json` | 镜像 |
+| 自动 | `@020/dao-agi/vendor/wam/*` (符号链) | 零操作 |
+
+### 益 (为学日益 → 为道日损)
+
+**适应性矩阵** (覆盖前不曾适应的场景):
+
+| 场景 | v17.42.12 | v17.42.13 |
+|------|-----------|-----------|
+| 只读 home FS (企业锁盘) | ❌ 写失败崩 | ✅ globalStorageUri 兜底 |
+| 沙箱 FS (Flatpak/Snap) | ❌ 权限拒绝崩 | ✅ tmpdir 末路 |
+| 多用户同机 (家庭/远程) | ⚠️ 共享污染 | ✅ `~/.wam-hot/<user>` 隔离 |
+| Windsurf fork (Trae/Void/Kiro) | ⚠️ 可能路径错 | ✅ appName + execPath 兜底 |
+| `appName=""`/单字/纯空白 | ❌ 退 Windsurf 错路 | ✅ execPath basename 兜底 |
+| `homedir()` 抛 (测试 env) | ❌ 整个插件死 | ✅ 空串+候选空+四级降级 |
+| linux 无 `~/.config` | ⚠️ 候选不存在 | ✅ `XDG_CONFIG_HOME` + tmpdir |
+| `activate()` 任一异常 | ❌ 静默哑火 | ✅ 四级降级+诊断日志 |
+
+### 验 (知常曰明)
+
+```
+WAM E2E v17.42.13-渊兮似万物之宗 · RESULT: 387 pass / 0 fail / 0 skip
+STATUS: ✅ ALL GREEN
+```
+
+L1-L28 全绿 · 新增 L28 层 28 断言覆盖:
+
+- `_isPathWritable` / `_getUserDiscriminator` 函数存在 (×4)
+- `_resolveWamDir(context)` 六级兜底含 WAM_HOT_DIR/wamHotDir/legacy/user-isolated/globalStorageUri/tmpdir (×7)
+- `_detectProductName` 三级含 execPath basename (×5)
+- `_resolveDataDir` 多 fork 候选 + XDG (×2)
+- `activate()` 四段 try/catch + 降级模式 + 复验可写性 (×7)
+- 版本锚点 v17.42.13 + v17.42.12 历史保留 (×3)
+
+### 向后兼容 (无为而无不为)
+
+- ✅ 老 `~/.wam-hot` 存在即沿用 (级3 优先)
+- ✅ `env.WAM_HOT_DIR` / `cfg.wam.wamHotDir` 配置继续最高优先
+- ✅ `_resolveWamDir()` 无参调用仍可 (context 为 optional)
+- ✅ v17.42.12 / v17.42.6 历史锚点注释保留
+- ✅ 所有 27 层 E2E 继续全绿 · 零回归
+
+### 延后 (知止可以不殆)
+
+破口 6 (Firebase key 动态抽取) · 破口 7 (认证系统可插拔) 暂延 — Devin-first (`v17.40`) 已是主路, Firebase 为次, 风险已实质对冲. 待 Cognition 下次 rebrand 动因时再手术.
+
+---
+
 ## v17.42.2 · 去芜存菁 · 大制不割 · 切号后 state 不变量归一 `_afterSwitchSuccess`
 
 ### 病根 (v17.42.1 深审 · 以神遇而不以目视)

@@ -7,6 +7,9 @@
 // ─ v17.41 ─ 唯变所适: WAM_DIR 支持 env WAM_HOT_DIR + wam.wamHotDir 覆盖 · 默认 ~/.wam-hot
 // ─ v17.42 ─ 反者道之动: 逆向本源根治msgAnchor · localhost gRPC双层匹配 + http2 hook + 消息即标记使用中
 // ─ v17.42.2 ─ 去芜存菁: 切号后 state 不变量统一 · _afterSwitchSuccess · 大制不割 (8 路归一)
+// ─ v17.42.13 ─ 道冲·用之不盈·渊兮似万物之宗: 适应所有用户/环境/变化
+//                存储五级兜底 (env→cfg→legacy→user-isolated→globalStorageUri→tmpdir) · _isPathWritable 探测
+//                用户隔离 ~/.wam-hot/<user> · 产品名三级强化 (cfg→appName→execPath basename) · activate 四级容错
 // 详细迭代历史见 git log (v15~v17.42 凡 60+ 代 · 为学日益已化为 git 考古, 源码去芜留菁)
 const vscode = require("vscode");
 const crypto = require("crypto");
@@ -21,27 +24,50 @@ const os = require("os");
 
 // ── 配置 · 道法自然 — 一切从环境动态获取, 设置可覆盖, 零硬编码 ──
 
+// ── v17.42.13 · 道冲 · 用之或不盈 · 渊兮似万物之宗 ──
+// 本源哲学: 产品名/数据目录/工作目录 · 三级适应 · 五级兜底 · 涵容一切未知环境
+//   兵无常势, 水无常形 — 产品可为任何 VSCode fork
+//   能因敌变化而取胜者谓之神 — 空值/单字/纯空白/陌生 appName 皆能自适
+//   曲则全 — 不存在即回退, 不可写即降级, 从不抛
+
 // ── 产品名自适应: 检测实际IDE产品名 (Windsurf/Cursor/VSCode fork等) ──
+// v17.42.13: 三级强化 — appName + appHost + execPath basename
 function _detectProductName() {
-  // 优先: VS Code settings 显式配置
+  // 优先 1: VS Code settings 显式配置 (运维最高权)
   try {
     const cfgName = vscode.workspace
       .getConfiguration("wam")
       .get("productName", "");
-    if (cfgName) return cfgName;
+    if (cfgName && typeof cfgName === "string" && cfgName.trim().length > 0)
+      return cfgName.trim();
   } catch {}
-  // 次优: vscode.env.appName (运行时真实产品名)
+  // 优先 2: vscode.env.appName (运行时真实产品名)
   try {
-    if (vscode.env.appName) {
-      // appName 可能是 "Windsurf", "Visual Studio Code", "Cursor" 等
-      const name = vscode.env.appName.split(/\s/)[0]; // 取第一个词
-      if (name && name.length > 1) return name;
+    if (vscode.env.appName && typeof vscode.env.appName === "string") {
+      // appName 可能是 "Windsurf", "Visual Studio Code", "Cursor", "Trae", ...
+      const raw = vscode.env.appName.trim();
+      if (raw.length > 0) {
+        const name = raw.split(/\s+/)[0];
+        // v17.42.13: 单字符也可能是有效 fork 名 (但排除纯空白/纯符号)
+        if (name && /[A-Za-z\u4e00-\u9fa5]/.test(name)) return name;
+      }
     }
   } catch {}
-  return "Windsurf"; // 兜底默认
+  // 优先 3 (v17.42.13 新): process.execPath basename · IDE 二进制自带品牌
+  try {
+    const exe = process.execPath || "";
+    const base = path.basename(exe, path.extname(exe));
+    // 排除 "node"/"electron" 等纯 runtime, 只接受 fork 品牌
+    if (base && !/^(node|electron|code|code-oss)$/i.test(base)) {
+      // 首字母大写规范化
+      return base.charAt(0).toUpperCase() + base.slice(1);
+    }
+  } catch {}
+  return "Windsurf"; // 兜底默认 (不变 · 向后兼容)
 }
 
 // ── 数据目录自适应: 跨平台 + 自定义安装 ──
+// v17.42.13: 新增 XDG 支持 + 多 fork 级联候选
 function _resolveDataDir(productName) {
   // 优先: VS Code settings 显式配置
   try {
@@ -50,47 +76,56 @@ function _resolveDataDir(productName) {
   } catch {}
   // 按平台构建候选路径列表
   const candidates = [];
-  const home = os.homedir();
+  let home = "";
+  try {
+    home = os.homedir() || "";
+  } catch {
+    home = "";
+  }
   switch (process.platform) {
     case "win32": {
       const appdata =
-        process.env.APPDATA || path.join(home, "AppData", "Roaming");
-      candidates.push(path.join(appdata, productName));
-      // 兼容: 可能叫 "Windsurf" 即使 productName 检测不同
-      if (productName !== "Windsurf")
-        candidates.push(path.join(appdata, "Windsurf"));
-      candidates.push(path.join(appdata, "Code")); // VS Code 兜底
+        process.env.APPDATA ||
+        (home ? path.join(home, "AppData", "Roaming") : "");
+      if (appdata) {
+        candidates.push(path.join(appdata, productName));
+        // 兼容: 主流 fork 名均尝试 (水无常形)
+        for (const alt of ["Windsurf", "Cursor", "Trae", "Code"]) {
+          if (productName !== alt) candidates.push(path.join(appdata, alt));
+        }
+      }
       break;
     }
     case "darwin": {
-      candidates.push(
-        path.join(home, "Library", "Application Support", productName),
-      );
-      if (productName !== "Windsurf")
-        candidates.push(
-          path.join(home, "Library", "Application Support", "Windsurf"),
-        );
-      candidates.push(
-        path.join(home, "Library", "Application Support", "Code"),
-      );
+      if (home) {
+        const appSup = path.join(home, "Library", "Application Support");
+        candidates.push(path.join(appSup, productName));
+        for (const alt of ["Windsurf", "Cursor", "Trae", "Code"]) {
+          if (productName !== alt) candidates.push(path.join(appSup, alt));
+        }
+      }
       break;
     }
     default: {
-      // linux
-      candidates.push(path.join(home, ".config", productName));
-      if (productName !== "Windsurf")
-        candidates.push(path.join(home, ".config", "Windsurf"));
-      candidates.push(path.join(home, ".config", "Code"));
+      // linux / bsd / else — XDG_CONFIG_HOME 优先 (v17.42.13 新)
+      const xdg =
+        process.env.XDG_CONFIG_HOME || (home ? path.join(home, ".config") : "");
+      if (xdg) {
+        candidates.push(path.join(xdg, productName));
+        for (const alt of ["Windsurf", "Cursor", "Trae", "Code"]) {
+          if (productName !== alt) candidates.push(path.join(xdg, alt));
+        }
+      }
       break;
     }
   }
   // 返回第一个存在的
   for (const dir of candidates) {
     try {
-      if (fs.existsSync(dir)) return dir;
+      if (dir && fs.existsSync(dir)) return dir;
     } catch {}
   }
-  return candidates[0]; // 返回首选即使不存在
+  return candidates[0] || ""; // v17.42.13: 候选空时返回空串 (上游有 globalStorageUri 兜底)
 }
 
 // ── 延迟初始化: activate()时调用一次, 之后全局可用 ──
@@ -402,18 +437,101 @@ function _getRelayHost() {
   return host;
 }
 
-// ── WAM_DIR 可配化: env WAM_HOT_DIR > wam.wamHotDir > 默认 ~/.wam-hot ──
-function _resolveWamDir() {
-  if (process.env.WAM_HOT_DIR) return process.env.WAM_HOT_DIR;
+// ── v17.42.13 · 路径可写性探测 (曲则全 · 不可写即降级) ──
+function _isPathWritable(p) {
+  try {
+    if (!p || typeof p !== "string") return false;
+    if (!fs.existsSync(p)) {
+      try {
+        fs.mkdirSync(p, { recursive: true });
+      } catch {
+        return false;
+      }
+    }
+    const probe = path.join(p, ".wam_write_probe");
+    fs.writeFileSync(probe, String(Date.now()));
+    try {
+      fs.unlinkSync(probe);
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── v17.42.13 · 用户隔离标识 (各安其位 · 多用户同机不相侵) ──
+function _getUserDiscriminator() {
+  try {
+    const u = os.userInfo();
+    if (u && u.username) {
+      return String(u.username)
+        .replace(/[^A-Za-z0-9_-]/g, "_")
+        .substring(0, 32);
+    }
+  } catch {}
+  try {
+    const n = process.env.USERNAME || process.env.USER || process.env.LOGNAME;
+    if (n) {
+      return String(n)
+        .replace(/[^A-Za-z0-9_-]/g, "_")
+        .substring(0, 32);
+    }
+  } catch {}
+  return "shared"; // 兜底 · 单用户兼容
+}
+
+// ── WAM_DIR 可配化 + 五级兜底 · v17.42.13 渊兮似万物之宗 ──
+//   级1 env WAM_HOT_DIR (运维最高权)
+//   级2 vscode config wam.wamHotDir (用户权)
+//   级3 legacy ~/.wam-hot (老目录已存在即沿用 · 无感迁移 · 向后兼容)
+//   级4 用户隔离 ~/.wam-hot/<user> (新默认 · 多用户共机不冲突)
+//   级5 context.globalStorageUri (VSCode 保证可写 · 沙箱/只读盘兜底)
+//   级6 os.tmpdir()/wam-hot-<user> (末路 · 至少能跑一个会话)
+function _resolveWamDir(context) {
+  // 级1
+  if (process.env.WAM_HOT_DIR && _isPathWritable(process.env.WAM_HOT_DIR)) {
+    return process.env.WAM_HOT_DIR;
+  }
+  // 级2
   try {
     const cfgDir = vscode.workspace
       .getConfiguration("wam")
       .get("wamHotDir", "");
-    if (cfgDir) return cfgDir;
+    if (cfgDir && _isPathWritable(cfgDir)) return cfgDir;
   } catch {}
-  return path.join(os.homedir(), ".wam-hot");
+  // 级3 + 级4: home 相关
+  let home = "";
+  try {
+    home = os.homedir() || "";
+  } catch {
+    home = "";
+  }
+  if (home) {
+    const legacy = path.join(home, ".wam-hot");
+    // 级3 legacy 已存在且可写 → 沿用 (老数据零迁移)
+    if (fs.existsSync(legacy) && _isPathWritable(legacy)) return legacy;
+    // 级4 用户隔离默认
+    const isolated = path.join(home, ".wam-hot", _getUserDiscriminator());
+    if (_isPathWritable(isolated)) return isolated;
+  }
+  // 级5 globalStorageUri (沙箱友好)
+  try {
+    const gsPath =
+      context && context.globalStorageUri && context.globalStorageUri.fsPath;
+    if (gsPath) {
+      const wamHot = path.join(gsPath, "wam-hot");
+      if (_isPathWritable(wamHot)) return wamHot;
+    }
+  } catch {}
+  // 级6 tmpdir 末路
+  try {
+    const tmp = path.join(os.tmpdir(), "wam-hot-" + _getUserDiscriminator());
+    if (_isPathWritable(tmp)) return tmp;
+  } catch {}
+  // 完全失败 → 返回 legacy sentinel (activate 层会检测并降级到纯内存模式)
+  return home ? path.join(home, ".wam-hot") : path.join(os.tmpdir(), "wam-hot");
 }
-let WAM_DIR = path.join(os.homedir(), ".wam-hot"); // 模块加载默认值 · activate() 时 _resolveWamDir() 重新解析
+let WAM_DIR = path.join(os.homedir(), ".wam-hot"); // 模块加载默认值 · activate() 时 _resolveWamDir(context) 重新解析
 function _deriveWamPaths() {
   TOKEN_FILE = path.join(WAM_DIR, "oneshot_token.json");
   RESULT_FILE = path.join(WAM_DIR, "inject_result.json");
@@ -435,7 +553,13 @@ let RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 let RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.42.8"; // v17.42.8: 同步隔离死代理 env + undici 全局 Dispatcher 重置 — 根治 all_channels_failed/Devin Cloud disconnected 双症共源: Explorer session env 污染 HTTPS_PROXY=141:17890 → Windsurf 继承 → Electron/undici 首 fetch 即锁定 ProxyAgent · 后续 delete env 无效; 治法: activate 第一行同步 quarantine env 六 key (内存备份 · 待 TCP 验活再回写活者) + setGlobalDispatcher(new Agent()) 重置已 cache 的 ProxyAgent · 双保险 · 太上不知有之
+const WAM_VERSION = "17.42.13"; // v17.42.13: 道冲用之不盈·渊兮似万物之宗 — 存储五级兜底+用户隔离+产品名三级强化+activate四级容错
+// 根因: ~/.wam-hot 单路径刚则断 · _detectProductName 首词为空即退 Windsurf · activate 无try/catch
+// 突破: _resolveWamDir 六级链 (env→cfg→legacy→user-isolated→globalStorageUri→tmpdir) · _isPathWritable 探测 · activate 四级降级模式
+// 历史锚点保留 (向后兼容/审计): v17.42.12: 道法自然·@vscode/proxy-agent本源突破 — env隔离+undici重置 + proxySupport='on'+agent:false绕死代理
+// 历史锚点保留 (向后兼容/审计): v17.42.6: 死代理 env 自净 (启动 TCP 验活 · 死则剔 env)
+let _deadProxyQuarantined = false;
+let _savedProxySupport = null; // 原 http.proxySupport 值 · quarantine 时保存 · 活代理恢复时还原
 
 let _store = null;
 let _sidebarProvider = null;
@@ -2803,6 +2927,8 @@ function _httpsPost(url, body, opts = {}) {
       servername:
         opts.servername !== undefined ? opts.servername : parsed.hostname,
     };
+    // v17.42.12: agent:false 绕 @vscode/proxy-agent (proxySupport='on' 时 agent!==undefined → 跳过代理)
+    if (_deadProxyQuarantined) reqOpts.agent = false;
     const req = https.request(reqOpts, (res) => {
       let data = "";
       res.on("data", (c) => (data += c));
@@ -2838,13 +2964,16 @@ function _httpsViaProxy(
     const timer = setTimeout(() => {
       reject(new Error("proxy_timeout"));
     }, timeout);
-    const connReq = http.request({
+    const connOpts = {
       host: proxyHost,
       port: proxyPort,
       method: "CONNECT",
       path: `${parsed.hostname}:443`,
       timeout: 3000,
-    });
+    };
+    // v17.42.12: CONNECT 请求也需绕 proxy-agent · 否则对本地代理的 CONNECT 又被劫持到死代理
+    if (_deadProxyQuarantined) connOpts.agent = false;
+    const connReq = http.request(connOpts);
     connReq.on("connect", (res, socket) => {
       if (res.statusCode !== 200) {
         clearTimeout(timer);
@@ -2868,6 +2997,7 @@ function _httpsViaProxy(
           servername: parsed.hostname,
           rejectUnauthorized: false,
           timeout: timeout - 2000,
+          agent: false, // socket 已建 · 不需 agent 介入
         },
         (resp) => {
           let data = "";
@@ -2922,13 +3052,16 @@ function _verifyProxyPort(host, port) {
     const timer = setTimeout(() => {
       resolve(false);
     }, 2000);
-    const connReq = http.request({
+    const _vpOpts = {
       host,
       port,
       method: "CONNECT",
       path: `${_getFirebaseHost()}:443`,
       timeout: 1500,
-    });
+    };
+    // v17.42.12: 代理验证 CONNECT 也需绕 proxy-agent
+    if (_deadProxyQuarantined) _vpOpts.agent = false;
+    const connReq = http.request(_vpOpts);
     connReq.on("connect", (res, socket) => {
       clearTimeout(timer);
       socket.destroy();
@@ -3296,6 +3429,25 @@ function _quarantineEnvProxySync() {
   } catch {
     // 某些环境无 undici (老 Node) · 无妨 · 仅失去双保险 · env 隔离仍生效
   }
+  // v17.42.12: @vscode/proxy-agent 本源突破
+  //   proxy-agent patch http(s).request: proxySupport='override' 时无条件劫持 agent
+  //   改为 'on' → 仅当 agent===undefined 时走代理 → 我们的 agent:false 绕过
+  if (n > 0) {
+    _deadProxyQuarantined = true;
+    try {
+      const httpCfg = vscode.workspace.getConfiguration("http");
+      _savedProxySupport = httpCfg.get("proxySupport", "override");
+      if (_savedProxySupport !== "on") {
+        httpCfg.update("proxySupport", "on", true).then(
+          () =>
+            log(
+              `env-proxy: http.proxySupport → 'on' (was '${_savedProxySupport}') · agent:false 绕 proxy-agent`,
+            ),
+          () => {}, // settings 写入偶尔失败 · 不阻塞
+        );
+      }
+    } catch {}
+  }
   return n;
 }
 
@@ -3351,7 +3503,33 @@ async function _verifyAndRestoreEnvProxy() {
     }
     delete _savedEnvProxy[key];
   }
-  if (quarantined > 0) _invalidateProxyCache();
+  if (quarantined > 0) {
+    _invalidateProxyCache();
+    _deadProxyQuarantined = true;
+    log(
+      `env-proxy: ${quarantined} 个死代理保持隔离 · _deadProxyQuarantined=true · proxySupport='on' · agent:false 生效`,
+    );
+  }
+  if (restored > 0 && quarantined === 0) {
+    _deadProxyQuarantined = false;
+    // 还原 http.proxySupport
+    if (_savedProxySupport && _savedProxySupport !== "on") {
+      try {
+        vscode.workspace
+          .getConfiguration("http")
+          .update("proxySupport", _savedProxySupport, true)
+          .then(
+            () =>
+              log(
+                `env-proxy: http.proxySupport → '${_savedProxySupport}' (还原)`,
+              ),
+            () => {},
+          );
+      } catch {}
+      _savedProxySupport = null;
+    }
+    log(`env-proxy: 全部活代理已回写 env · _deadProxyQuarantined=false`);
+  }
   return { restored, quarantined };
 }
 
@@ -3501,6 +3679,8 @@ function _httpsPostRaw(url, body, opts = {}) {
       rejectUnauthorized: false,
       servername: parsed.hostname,
     };
+    // v17.42.12: agent:false 绕 @vscode/proxy-agent
+    if (_deadProxyQuarantined) reqOpts.agent = false;
     const req = https.request(reqOpts, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
@@ -3545,13 +3725,16 @@ function _httpsPostRawViaProxy(
     const timer = setTimeout(() => {
       reject(_rej(new Error("proxy_raw_timeout")));
     }, timeout);
-    const connReq = http.request({
+    const connOptsR = {
       host: proxyHost,
       port: proxyPort,
       method: "CONNECT",
       path: `${parsed.hostname}:443`,
       timeout: 3000,
-    });
+    };
+    // v17.42.12: CONNECT 请求也需绕 proxy-agent
+    if (_deadProxyQuarantined) connOptsR.agent = false;
+    const connReq = http.request(connOptsR);
     connReq.on("connect", (res, socket) => {
       if (res.statusCode !== 200) {
         clearTimeout(timer);
@@ -3575,6 +3758,7 @@ function _httpsPostRawViaProxy(
           servername: parsed.hostname,
           rejectUnauthorized: false,
           timeout: timeout - 2000,
+          agent: false, // socket 已建 · 防 VS Code 二次代理
         },
         (resp) => {
           const chunks = [];
@@ -5879,11 +6063,42 @@ async function switchToAccount(email, password) {
     const injectResult = await injectAuth(ds.sessionToken);
     const ms = Date.now() - t0;
     if (!injectResult.ok) {
+      const injErrD = String(injectResult.error || "");
       // inject 失败 → 失效 Devin 缓存 (可能 sessionToken 已过期)
       _invalidateDevinCache(email);
       log(
         `switch FAIL inject (devin): ${JSON.stringify(injectResult.error)} [${ms}ms] · cache 已失效`,
       );
+      // v17.42.9 知人者智 (Devin-only 分支本源归档): inject code:0 = Windsurf 内部 auth 拒绝
+      // 与 L6102-6151 Firebase 路径同构 · 镜像 login fail 归档 (L6047-6081) · 3 次 → archive
+      // _devinAcc / _devinAccIdx 上文已就绪 (L5842-5845) · 直接复用
+      if (_devinAccIdx >= 0 && _devinAcc) {
+        _devinAcc._injectFailed = injErrD;
+        _devinAcc._injectFailedAt = Date.now();
+        _devinAcc._injectFailedCount = (_devinAcc._injectFailedCount || 0) + 1;
+        if (_devinAcc._injectFailedCount >= 3) {
+          log(
+            `switch: archiving inject-dead account [${_devinAccIdx}] ${email} (devin) — Windsurf auth 风控拒绝×${_devinAcc._injectFailedCount}`,
+          );
+          _archivePurged(_store, [
+            {
+              ..._devinAcc,
+              _purgeReason: `inject_dead_after_retries: ${injErrD}`,
+              _purgedAt: Date.now(),
+            },
+          ]);
+          _store.remove(_devinAccIdx);
+          _notifyWarn(
+            `WAM: 已归档 ${email} (Windsurf 内部 auth 拒绝×3 · Devin-only)，可用 "WAM: 从归档恢复" 找回`,
+            "auto",
+          );
+        } else {
+          log(
+            `switch: ${email} (devin) inject 拒绝 ${_devinAcc._injectFailedCount}/3, 保留`,
+          );
+          _store.save();
+        }
+      }
       return {
         ok: false,
         error: `Devin 注入失败: ${JSON.stringify(injectResult.error)}`,
@@ -5893,6 +6108,15 @@ async function switchToAccount(email, password) {
     log(
       `switch OK (devin): ${injectResult.account} accountId=${ds.accountId.substring(0, 16)}... ${ms}ms`,
     );
+    // v17.42.9: inject OK 清 inject-dead 标记 (Devin-only 分支)
+    if (_devinAccIdx >= 0 && _devinAcc && _devinAcc._injectFailedCount > 0) {
+      delete _devinAcc._injectFailed;
+      delete _devinAcc._injectFailedAt;
+      _devinAcc._injectFailedCount = 0;
+      try {
+        _store.save();
+      } catch {}
+    }
     _lastSwitchTime = Date.now();
     _writeInstanceClaim(email);
     try {
@@ -6103,7 +6327,45 @@ async function switchToAccount(email, password) {
   const injectResult = await injectAuth(idToken);
   const ms = Date.now() - t0;
   if (!injectResult.ok) {
+    const injErr = String(injectResult.error || "");
     log(`switch FAIL inject: ${JSON.stringify(injectResult.error)} [${ms}ms]`);
+
+    // v17.42.9 知人者智 · 以神遇不以目视: inject code:0 非 provider 忙 (忙→timeout)
+    //   而是 Windsurf 内部 auth 对 idToken 风控拒绝 (同一 token 重试必同果)
+    //   镜像 login fail 归档机制 (L6047-6081) · 3 次 inject fail → archive
+    //   保 token cache (token 本身有效) · 仅 account 下架
+    const idxI = _store?.accounts.findIndex(
+      (a) => a.email.toLowerCase() === emailKey,
+    );
+    if (idxI >= 0) {
+      const deadAcc = _store.accounts[idxI];
+      deadAcc._injectFailed = injErr;
+      deadAcc._injectFailedAt = Date.now();
+      deadAcc._injectFailedCount = (deadAcc._injectFailedCount || 0) + 1;
+      if (deadAcc._injectFailedCount >= 3) {
+        log(
+          `switch: archiving inject-dead account [${idxI}] ${email} — Windsurf auth 风控拒绝×${deadAcc._injectFailedCount}`,
+        );
+        _archivePurged(_store, [
+          {
+            ...deadAcc,
+            _purgeReason: `inject_dead_after_retries: ${injErr}`,
+            _purgedAt: Date.now(),
+          },
+        ]);
+        _store.remove(idxI);
+        _notifyWarn(
+          `WAM: 已归档 ${email} (Windsurf 内部 auth 拒绝×3)，可用 "WAM: 从归档恢复" 找回`,
+          "auto",
+        );
+      } else {
+        log(
+          `switch: ${email} inject 拒绝 ${deadAcc._injectFailedCount}/3, 保留`,
+        );
+        _store.save();
+      }
+    }
+
     // 注入失败不清除token缓存 — token有效, 是auth provider忙
     // 仅当token确实过期(>50min)时自然淘汰, 避免无谓重新登录
     return {
@@ -6116,6 +6378,19 @@ async function switchToAccount(email, password) {
     `switch OK: ${injectResult.account} apiKey=${(injectResult.apiKey || "").substring(0, 20)}... ${ms}ms`,
   );
   _lastSwitchTime = Date.now();
+  // v17.42.9: inject OK 清 inject-dead 标记 (镜像 L5985-5987 _switchFailed 清)
+  const idxOk = _store?.accounts.findIndex(
+    (a) => a.email.toLowerCase() === emailKey,
+  );
+  if (idxOk >= 0) {
+    const accOk = _store.accounts[idxOk];
+    if (accOk._injectFailedCount > 0) {
+      delete accOk._injectFailed;
+      delete accOk._injectFailedAt;
+      accOk._injectFailedCount = 0;
+      _store.save();
+    }
+  }
   _writeInstanceClaim(email);
   try {
     fs.mkdirSync(WAM_DIR, { recursive: true });
@@ -8952,19 +9227,53 @@ function activate(context) {
   //   同时 setGlobalDispatcher(new undici.Agent()) 重置已 cache 的 ProxyAgent (防其它扩展先 activate 已中毒)
   const _qN = _quarantineEnvProxySync();
 
-  // 道法自然: 动态初始化产品名和数据目录
-  PRODUCT_NAME = _detectProductName();
-  DATA_DIR = _resolveDataDir(PRODUCT_NAME);
-  // v17.41 唯变所适: WAM_DIR 动态解析 · 派生路径随之更新
-  WAM_DIR = _resolveWamDir();
-  _deriveWamPaths();
-  log(
-    `activate v${WAM_VERSION}-\u9053\u6cd5\u81ea\u7136 — inst=${_instanceId} product=${PRODUCT_NAME} dataDir=${DATA_DIR} \u7edf\u4e00\u4ee3\u7406\u63cf\u8ff0\u7b26\u00b7\u96f6\u786e\u5b9a\u672c\u6e90`,
-  );
-  if (_qN > 0) {
+  // ── v17.42.13 · 道冲用之不盈 · 存储初始化四级容错 · 曲则全 ──
+  // 级0  全活 (99%)        · 产品名+DATA_DIR+WAM_DIR 全部解析成功且可写
+  // 级1  storage-readonly · WAM_DIR 五级兜底后仍不可写 · 降级为纯内存模式
+  // 级2  storage-partial  · PRODUCT_NAME/DATA_DIR 解析异常 · 仍沿用默认
+  // 级3  storage-none     · 初始化全盘崩 · 仅注册最小命令集 (诊断 + selfTest)
+  let _activateDegraded = null;
+  const _activateErrs = [];
+  try {
+    // 道法自然: 动态初始化产品名和数据目录
+    PRODUCT_NAME = _detectProductName() || "Windsurf";
+  } catch (e) {
+    _activateErrs.push(`detectProduct: ${e && e.message ? e.message : e}`);
+  }
+  try {
+    DATA_DIR = _resolveDataDir(PRODUCT_NAME) || "";
+  } catch (e) {
+    _activateErrs.push(`resolveDataDir: ${e && e.message ? e.message : e}`);
+  }
+  try {
+    // v17.41 唯变所适 · v17.42.13 五级兜底: WAM_DIR 动态解析 · 派生路径随之更新
+    WAM_DIR = _resolveWamDir(context);
+    _deriveWamPaths();
+    // v17.42.13 最终可写性复验 · 五级兜底后仍不可写 → 降级
+    if (!_isPathWritable(WAM_DIR)) {
+      _activateDegraded = "storage-readonly";
+      _activateErrs.push(`wamDirNotWritable: ${WAM_DIR}`);
+    }
+  } catch (e) {
+    _activateDegraded = _activateDegraded || "storage-partial";
+    _activateErrs.push(`resolveWamDir: ${e && e.message ? e.message : e}`);
+  }
+  try {
     log(
-      `env-proxy quarantine: 同步隔离 ${_qN} 个 env 代理变量 + undici Dispatcher 已重置 (异步 TCP 验活中)`,
+      `activate v${WAM_VERSION}-\u9053\u6cd5\u81ea\u7136 — inst=${_instanceId} product=${PRODUCT_NAME} dataDir=${DATA_DIR} wamDir=${WAM_DIR}${_activateDegraded ? ` \u00b7 DEGRADED(${_activateDegraded})` : ""} \u7edf\u4e00\u4ee3\u7406\u63cf\u8ff0\u7b26\u00b7\u96f6\u786e\u5b9a\u672c\u6e90`,
     );
+    if (_activateErrs.length > 0) {
+      log(
+        `\u26a0\ufe0f activate errs [${_activateErrs.length}]: ${_activateErrs.join(" | ")}`,
+      );
+    }
+  } catch {}
+  if (_qN > 0) {
+    try {
+      log(
+        `env-proxy quarantine: 同步隔离 ${_qN} 个 env 代理变量 + undici Dispatcher 已重置 (异步 TCP 验活中)`,
+      );
+    } catch {}
   }
 
   // ── v17.42.8 异步 TCP 验活 + 活代理回写 — fire-and-forget ──
@@ -9192,6 +9501,9 @@ function activate(context) {
         delete clean._switchFailed;
         delete clean._switchFailedAt;
         delete clean._switchFailedCount;
+        delete clean._injectFailed; // v17.42.9: inject-dead 标记
+        delete clean._injectFailedAt; // v17.42.9
+        delete clean._injectFailedCount; // v17.42.9
         delete clean._purgeReason;
         delete clean._purgedAt;
         _store.accounts.push(clean);

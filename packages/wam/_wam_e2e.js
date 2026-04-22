@@ -1,5 +1,5 @@
 /**
- * WAM · rt-flow E2E test · v17.42.8 · 同步隔离死代理 env + undici Dispatcher 重置 (叠加 v17.42.7 锁🔒贯通 + v17.42.6 env 自净 + v17.42.5 五刀贯通)
+ * WAM · rt-flow E2E test · v17.42.13 · 道冲·用之不盈·渊兮似万物之宗 (叠加 v17.42.12 proxy-agent突破 + v17.42.10 inject-dead + v17.42.9 Firebase归档 + v17.42.8 env sync quarantine + v17.42.7 锁🔒 + v17.42.6 env自净 + v17.42.5 五刀)
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.42.8", `version=17.42.8 (got ${pkg.version})`);
+  assert(pkg.version === "17.42.13", `version=17.42.13 (got ${pkg.version})`);
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -102,7 +102,10 @@ section("L2: WAM_VERSION alignment");
 const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
-  assert(verMatch[1] === "17.42.8", `WAM_VERSION=17.42.8 (got ${verMatch[1]})`);
+  assert(
+    verMatch[1] === "17.42.13",
+    `WAM_VERSION=17.42.13 (got ${verMatch[1]})`,
+  );
 }
 
 // ══ L3: Core classes & functions ══
@@ -1300,11 +1303,12 @@ assert(
 );
 
 // —— activate 第一行同步调用 _quarantineEnvProxySync ——
+// v17.42.13: 窗口从 600→2000 字 (四级容错块增加 ~600 字 · 功能顺序不变)
 const actStart = code.indexOf("function activate(context) {");
-const actFirst200 = code.substring(actStart, actStart + 600);
+const actFirst200 = code.substring(actStart, actStart + 2000);
 assert(
   actFirst200.includes("_quarantineEnvProxySync()"),
-  "activate() 前 600 字符内调用 _quarantineEnvProxySync() (第一行同步)",
+  "activate() 前段调用 _quarantineEnvProxySync() (第一行同步)",
 );
 assert(
   actFirst200.indexOf("_quarantineEnvProxySync()") <
@@ -1339,10 +1343,371 @@ assert(
   "v17.42.6 历史锚点保留 '死代理 env 自净' (向后兼容/审计)",
 );
 
+// ══ L26: v17.42.9 inject-dead 本源归档 · 知人者智 ══
+section("L26: v17.42.9 inject-dead 归档 · switchToAccount inject fail 路径");
+
+// —— 新字段 _injectFailed / _injectFailedAt / _injectFailedCount ——
+assert(/_injectFailedCount/.test(code), "_injectFailedCount 字段引入");
+assert(
+  /deadAcc\._injectFailed\s*=\s*injErr/.test(code),
+  "inject fail 路径设 _injectFailed=error",
+);
+assert(
+  /deadAcc\._injectFailedAt\s*=\s*Date\.now\(\)/.test(code),
+  "inject fail 路径设 _injectFailedAt=now",
+);
+assert(
+  /deadAcc\._injectFailedCount\s*=\s*\(deadAcc\._injectFailedCount\s*\|\|\s*0\)\s*\+\s*1/.test(
+    code,
+  ),
+  "inject fail 路径 _injectFailedCount++",
+);
+
+// —— 3 次阈值 → _archivePurged ——
+assert(
+  /deadAcc\._injectFailedCount\s*>=\s*3/.test(code),
+  "3 次 inject fail 阈值",
+);
+assert(
+  /archiving inject-dead account/.test(code),
+  "归档日志锚 'archiving inject-dead account'",
+);
+assert(
+  /inject_dead_after_retries/.test(code),
+  "_purgeReason='inject_dead_after_retries'",
+);
+assert(
+  /Windsurf\s+(内部\s+)?auth\s+(风控\s*)?拒绝/.test(code),
+  "用户通知含 'Windsurf auth 风控拒绝'",
+);
+
+// —— 归档必走 _archivePurged + _store.remove ——
+const injFailBlock = code.substring(
+  code.indexOf("switch FAIL inject:"),
+  code.indexOf("// 注入失败不清除token缓存"),
+);
+assert(
+  injFailBlock.includes("_archivePurged(_store, [") &&
+    injFailBlock.includes("_store.remove(idxI)"),
+  "inject 归档调用 _archivePurged + _store.remove",
+);
+
+// —— inject OK 清标 ——
+assert(
+  /if\s*\(accOk\._injectFailedCount\s*>\s*0\)/.test(code),
+  "inject OK 路径条件清 _injectFailedCount (若 >0)",
+);
+assert(
+  /delete\s+accOk\._injectFailed;[\s\S]{0,80}delete\s+accOk\._injectFailedAt;[\s\S]{0,80}accOk\._injectFailedCount\s*=\s*0/.test(
+    code,
+  ),
+  "inject OK 清三字段 _injectFailed/_injectFailedAt/_injectFailedCount=0",
+);
+
+// —— 归档恢复路径清理 inject 字段 ——
+assert(
+  /delete\s+clean\._injectFailed;[\s\S]{0,100}delete\s+clean\._injectFailedAt;[\s\S]{0,100}delete\s+clean\._injectFailedCount/.test(
+    code,
+  ),
+  "从归档恢复路径清 _injectFailed* 三字段",
+);
+
+// —— v17.42.10 inject-dead 双路径逻辑仍完整 (代码中而非版本注释) ——
+assert(/inject-dead/.test(code), "inject-dead 逻辑存在");
+assert(
+  /v17\.42\.9\s*L6102-6151|Firebase 路径|Firebase 分支|Firebase\s*归档/.test(
+    code,
+  ),
+  "v17.42.9 逻辑锚保留 (Firebase 路径 L6102-6151)",
+);
+
+// —— L5881 Devin-only 分支 inject fail 归档 (v17.42.10 新增) ——
+const devinInjFailIdx = code.indexOf(
+  "switch FAIL inject (devin): ${JSON.stringify(injectResult.error)} [${ms}ms] · cache 已失效",
+);
+assert(
+  devinInjFailIdx > 0,
+  "Devin-only 分支 switch FAIL inject (devin) 日志锚存在",
+);
+const devinBlock = code.substring(devinInjFailIdx, devinInjFailIdx + 2500);
+assert(
+  devinBlock.includes("_devinAcc._injectFailed = injErrD") &&
+    devinBlock.includes(
+      "_devinAcc._injectFailedCount = (_devinAcc._injectFailedCount || 0) + 1",
+    ),
+  "Devin 分支 inject fail 设 _injectFailed/Count (镜像 Firebase 路径)",
+);
+assert(
+  /_devinAcc\._injectFailedCount\s*>=\s*3/.test(devinBlock) &&
+    devinBlock.includes("archiving inject-dead account") &&
+    devinBlock.includes("inject_dead_after_retries"),
+  "Devin 分支 3 次阈值 → _archivePurged + inject_dead_after_retries",
+);
+assert(
+  devinBlock.includes("(Windsurf 内部 auth 拒绝×3 · Devin-only)"),
+  "Devin 分支用户通知明示 'Devin-only' 出处",
+);
+
+// —— Devin 分支 inject OK 清标 ——
+assert(
+  /_devinAcc\._injectFailedCount\s*>\s*0/.test(code),
+  "Devin 分支 inject OK 清 _injectFailedCount (若 >0)",
+);
+const devinOkCleanIdx = code.indexOf(
+  "// v17.42.9: inject OK 清 inject-dead 标记 (Devin-only 分支)",
+);
+assert(devinOkCleanIdx > 0, "Devin 分支 inject OK 清标注释锚存在");
+const devinOkBlock = code.substring(devinOkCleanIdx, devinOkCleanIdx + 400);
+assert(
+  devinOkBlock.includes("delete _devinAcc._injectFailed") &&
+    devinOkBlock.includes("delete _devinAcc._injectFailedAt") &&
+    devinOkBlock.includes("_devinAcc._injectFailedCount = 0"),
+  "Devin 分支 inject OK 清三字段 (delete _injectFailed/_injectFailedAt + =0)",
+);
+
+// —— 双路径对称 (Firebase L6102-6151 + Devin L5881-5923) ——
+const archCount = (code.match(/archiving inject-dead account/g) || []).length;
+assert(
+  archCount >= 2,
+  `'archiving inject-dead account' 出现 ${archCount} 次 (期望 ≥2 · Firebase + Devin 双路径)`,
+);
+const purgeReasonCount = (code.match(/inject_dead_after_retries/g) || [])
+  .length;
+assert(
+  purgeReasonCount >= 2,
+  `'inject_dead_after_retries' 出现 ${purgeReasonCount} 次 (期望 ≥2)`,
+);
+assert(
+  /code:0/.test(code) &&
+    /(风控拒绝|auth\s*拒绝|auth\s*provider\s*拒绝)/.test(code),
+  "注释含 code:0 + 风控/auth 拒绝 (根因留档)",
+);
+
+// —— 镜像对齐 login fail 归档路径 (L6047-6081 范式) ——
+// login fail 用 _switchFailedCount · inject fail 用 _injectFailedCount · 语义隔离
+assert(
+  code.includes("_switchFailedCount") && code.includes("_injectFailedCount"),
+  "双计数字段并存 (login _switchFailedCount · inject _injectFailedCount · 语义隔离)",
+);
+
+// ════════════════════════════════════════════════════════════
+section(
+  "L27: v17.42.12 道法自然 — @vscode/proxy-agent 本源突破 (proxySupport='on' + agent:false)",
+);
+// —— 核心机制: _deadProxyQuarantined + proxySupport 切换 + agent:false 注入 ——
+assert(
+  code.includes("_deadProxyQuarantined = true"),
+  "_deadProxyQuarantined = true 存在 (quarantine 时设置)",
+);
+assert(
+  code.includes("_deadProxyQuarantined = false"),
+  "_deadProxyQuarantined = false 存在 (活代理恢复时清除)",
+);
+assert(/proxySupport.*on/.test(code), "proxySupport 切换为 'on' 逻辑存在");
+assert(
+  /_deadProxyQuarantined\)\s*\w+\.agent\s*=\s*false/.test(code),
+  "_deadProxyQuarantined 时 agent=false 注入 (绕 @vscode/proxy-agent)",
+);
+assert(
+  /let\s+_savedProxySupport/.test(code),
+  "_savedProxySupport 变量存在 (保存原 proxySupport 值)",
+);
+assert(
+  !code.includes('process.env.NO_PROXY = "*"'),
+  "无 NO_PROXY=* (不再需要 · proxySupport='on' 已足够)",
+);
+
+// —— v17.42.8 env 隔离仍完整 ——
+assert(
+  /function _quarantineEnvProxySync/.test(code),
+  "_quarantineEnvProxySync 同步隔离函数仍在",
+);
+assert(
+  /async function _verifyAndRestoreEnvProxy/.test(code),
+  "_verifyAndRestoreEnvProxy 异步验活函数仍在",
+);
+assert(
+  code.includes("undici.setGlobalDispatcher"),
+  "undici Dispatcher 重置仍在",
+);
+assert(
+  code.includes("_invalidateProxyCache"),
+  "_invalidateProxyCache 仍被调用 (死代理确认后触发重扫)",
+);
+
+// —— CONNECT 隧道 agent:false 保留 (良好实践) ——
+const agentFalseCount = (code.match(/agent:\s*false.*socket.*已建/g) || [])
+  .length;
+assert(
+  agentFalseCount >= 2,
+  `CONNECT 隧道 agent:false 保留 (${agentFalseCount} 处 · 期望 ≥2)`,
+);
+
+// —— 版本锡 ——
+assert(
+  /17\.42\.12.*proxy-agent.*本源突破/.test(code),
+  "WAM_VERSION 注释锨 '17.42.12: proxy-agent本源突破'",
+);
+assert(/proxySupport='on'/.test(code), "版本注释含 proxySupport='on' 突破策略");
+
+// ════════════════════════════════════════════════════════════
+section(
+  "L28: v17.42.13 道冲·用之不盈·渊兮似万物之宗 (存储五级兜底+用户隔离+产品名三级强化+activate四级容错)",
+);
+
+// —— 新 helper: _isPathWritable (可写性探测 · 曲则全) ——
+assert(
+  /function _isPathWritable\s*\(p\)/.test(code),
+  "_isPathWritable(p) 函数存在 (路径可写性探测 · 不可写即降级)",
+);
+assert(
+  /\.wam_write_probe/.test(code),
+  "_isPathWritable 使用 .wam_write_probe 探针文件",
+);
+assert(
+  /fs\.mkdirSync\(p,\s*\{\s*recursive:\s*true\s*\}\)/.test(code),
+  "_isPathWritable 不存在时 recursive mkdirSync 尝试创建",
+);
+
+// —— 新 helper: _getUserDiscriminator (用户隔离 · 各安其位) ——
+assert(
+  /function _getUserDiscriminator\s*\(\)/.test(code),
+  "_getUserDiscriminator() 函数存在 (多用户同机不相侵)",
+);
+assert(
+  /os\.userInfo\(\)/.test(code),
+  "_getUserDiscriminator 使用 os.userInfo() 取用户名",
+);
+assert(
+  /process\.env\.USERNAME\s*\|\|\s*process\.env\.USER/.test(code),
+  "_getUserDiscriminator env 兜底 (USERNAME/USER/LOGNAME)",
+);
+assert(
+  /return\s+"shared"/.test(code),
+  "_getUserDiscriminator 末路返回 'shared' (单用户兼容)",
+);
+
+// —— _resolveWamDir 六级兜底 (渊兮似万物之宗) ——
+assert(
+  /function _resolveWamDir\s*\(context\)/.test(code),
+  "_resolveWamDir(context) 签名接受 context 参数",
+);
+const wamDirFn = code.match(
+  /function _resolveWamDir\s*\(context\)[\s\S]{0,2000}?\n\}/,
+);
+assert(wamDirFn && wamDirFn[0], "_resolveWamDir 函数体可提取");
+if (wamDirFn && wamDirFn[0]) {
+  const body = wamDirFn[0];
+  assert(/process\.env\.WAM_HOT_DIR/.test(body), "级1: env WAM_HOT_DIR");
+  assert(/wamHotDir/.test(body), "级2: vscode config wam.wamHotDir");
+  assert(
+    /legacy/.test(body) && /\.wam-hot/.test(body),
+    "级3: legacy ~/.wam-hot 沿用",
+  );
+  assert(
+    /_getUserDiscriminator\(\)/.test(body),
+    "级4: 用户隔离 ~/.wam-hot/<user>",
+  );
+  assert(
+    /globalStorageUri/.test(body) && /fsPath/.test(body),
+    "级5: context.globalStorageUri (沙箱兜底)",
+  );
+  assert(/os\.tmpdir\(\)/.test(body), "级6: os.tmpdir() 末路");
+  assert(/_isPathWritable/.test(body), "每级均调用 _isPathWritable 探测");
+}
+
+// —— _detectProductName 三级强化 (以神遇不以目视) ——
+const prodFn = code.match(
+  /function _detectProductName\s*\(\)[\s\S]{0,1200}?\n\}/,
+);
+assert(prodFn && prodFn[0], "_detectProductName 函数体可提取");
+if (prodFn && prodFn[0]) {
+  const body = prodFn[0];
+  assert(/productName/.test(body), "优先1: cfg wam.productName");
+  assert(/vscode\.env\.appName/.test(body), "优先2: vscode.env.appName");
+  assert(
+    /process\.execPath/.test(body) && /path\.basename/.test(body),
+    "优先3 (v17.42.13 新): process.execPath basename 兜底",
+  );
+  assert(
+    /\/\^\(node\|electron\|code\|code-oss\)\$/.test(body) ||
+      /node\|electron\|code\|code-oss/.test(body),
+    "execPath 排除 node/electron/code/code-oss 纯 runtime",
+  );
+  assert(
+    /\/\[A-Za-z\\u4e00-\\u9fa5\]/.test(body) ||
+      /A-Za-z.*u4e00-.*u9fa5/.test(body),
+    "appName 接受含字母/中文, 排除纯空白/符号",
+  );
+}
+
+// —— _resolveDataDir 多 fork 级联候选 (水无常形) ——
+const ddFn = code.match(
+  /function _resolveDataDir\s*\(productName\)[\s\S]{0,2500}?\n\}/,
+);
+assert(ddFn && ddFn[0], "_resolveDataDir 函数体可提取");
+if (ddFn && ddFn[0]) {
+  const body = ddFn[0];
+  assert(
+    /\["Windsurf"\s*,\s*"Cursor"\s*,\s*"Trae"\s*,\s*"Code"\]/.test(body),
+    "_resolveDataDir 多 fork 候选: Windsurf/Cursor/Trae/Code",
+  );
+  assert(
+    /XDG_CONFIG_HOME/.test(body),
+    "linux 分支支持 XDG_CONFIG_HOME (v17.42.13 新)",
+  );
+}
+
+// —— activate() 四级容错 + 降级模式标记 ——
+assert(
+  /_activateDegraded/.test(code),
+  "_activateDegraded 降级模式标记变量存在",
+);
+assert(/storage-readonly/.test(code), "降级状态 'storage-readonly' 定义");
+assert(/storage-partial/.test(code), "降级状态 'storage-partial' 定义");
+assert(/_activateErrs/.test(code), "_activateErrs 错误聚合数组存在 (诊断可追)");
+// 四段 try 块: detectProduct / resolveDataDir / resolveWamDir+deriveWamPaths+可写性 / log
+const activateFrag = code.match(
+  /function activate\(context\)[\s\S]{0,3500}?globalStorageUri/,
+);
+if (activateFrag && activateFrag[0]) {
+  const body = activateFrag[0];
+  const tryCount = (body.match(/try\s*\{/g) || []).length;
+  assert(
+    tryCount >= 4,
+    `activate() 前段 try/catch 块 ≥ 4 (got ${tryCount}) — detectProduct/resolveDataDir/resolveWamDir/log`,
+  );
+  assert(
+    /_resolveWamDir\(context\)/.test(body),
+    "activate 调用 _resolveWamDir(context) 传入 context",
+  );
+  assert(
+    /_isPathWritable\(WAM_DIR\)/.test(body),
+    "activate 最终复验 _isPathWritable(WAM_DIR) (五级兜底后仍探一次)",
+  );
+}
+
+// —— 调用方签名兼容: _resolveWamDir 接受 context (老调用 _resolveWamDir() 仍可用) ——
+assert(
+  /function _resolveWamDir\(context\)/.test(code) &&
+    /WAM_DIR\s*=\s*_resolveWamDir\(context\)/.test(code),
+  "_resolveWamDir(context) 新签名 + activate 内传 context",
+);
+
+// —— 版本锚点 ——
+assert(
+  /17\.42\.13.*(渊兮似万物之宗|道冲|不盈)/.test(code),
+  "WAM_VERSION 注释含 '17.42.13: 渊兮似万物之宗/道冲/不盈' 本源锚点",
+);
+assert(
+  /v17\.42\.12.*proxy-agent.*本源突破/.test(code),
+  "v17.42.12 历史锚点保留 (向后兼容/审计)",
+);
+
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.42.8 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.42.13-渊兮似万物之宗 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);
