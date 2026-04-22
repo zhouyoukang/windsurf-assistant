@@ -1,5 +1,5 @@
 /**
- * WAM · rt-flow E2E test · v17.42.6 · 死代理 env 自净 (v17.42.5 五刀贯通基础上 · 反者道之动)
+ * WAM · rt-flow E2E test · v17.42.7 · 锁🔒全链贯通 + 一键导出 (叠加 v17.42.6 env 自净 + v17.42.5 五刀贯通)
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.42.6", `version=17.42.6 (got ${pkg.version})`);
+  assert(pkg.version === "17.42.7", `version=17.42.7 (got ${pkg.version})`);
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -102,7 +102,7 @@ section("L2: WAM_VERSION alignment");
 const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
-  assert(verMatch[1] === "17.42.6", `WAM_VERSION=17.42.6 (got ${verMatch[1]})`);
+  assert(verMatch[1] === "17.42.7", `WAM_VERSION=17.42.7 (got ${verMatch[1]})`);
 }
 
 // ══ L3: Core classes & functions ══
@@ -1108,10 +1108,107 @@ assert(
   "根因注释: Node 22+ https.request 原生读 env 绕过 _skipAutoProxy",
 );
 
+// ══ L24: v17.42.7 锁🔒 全链贯通 + 一键导出 ══
+section("L24: v17.42.7 lock 全链贯通 + copyAllAccounts 一键导出");
+
+// —— _isValidAutoTarget 统一门 ——
+assert(
+  /function\s+_isValidAutoTarget\s*\(/.test(code),
+  "_isValidAutoTarget(i) 函数定义存在 (统一候选验证门)",
+);
+assert(
+  code.includes("if (acc.skipAutoSwitch) return false") ||
+    /acc\.skipAutoSwitch\s*\)\s*return\s+false/.test(code),
+  "_isValidAutoTarget 包含 skipAutoSwitch 四辨",
+);
+assert(
+  /_isClaimedByOther\(acc\.email\)/.test(code),
+  "_isValidAutoTarget 包含 跨实例 claimed 检查",
+);
+assert(
+  code.includes("!acc.password") &&
+    /_tokenPoolBlacklist(\s*&&\s*_tokenPoolBlacklist)?\.has\(ek\)/.test(code),
+  "_isValidAutoTarget 包含 password + pool 黑名单四辨",
+);
+
+// —— 所有 选目标式 _predictiveCandidate 使用处必经 _isValidAutoTarget ——
+// 选目标式: `_predictiveCandidate ... ? _predictiveCandidate : ...` (选为当届 target)
+// 与 log 式 `>= 0 ? " [预判]"` 区分 (后者不以 _predictiveCandidate 作为真果)
+const pickUses = [
+  ...code.matchAll(
+    /_predictiveCandidate\s*[>=!&|)]+[^?]*\?\s*_predictiveCandidate\s*:/g,
+  ),
+];
+for (const m of pickUses) {
+  const ctx = code.substring(Math.max(0, m.index - 200), m.index + 200);
+  assert(
+    ctx.includes("_isValidAutoTarget"),
+    `选目标式 _predictiveCandidate 使用处必经 _isValidAutoTarget (@idx ${m.index})`,
+  );
+}
+assert(
+  pickUses.length >= 1,
+  `至少 1 处 选目标式 _predictiveCandidate (msgAnchor) · got ${pickUses.length}`,
+);
+// 直式调用 _isValidAutoTarget(_predictiveCandidate) (monitor/exhaust/rate-limit 至少 3 处)
+const directValidUses = [
+  ...code.matchAll(/_isValidAutoTarget\(_predictiveCandidate\)/g),
+];
+assert(
+  directValidUses.length >= 3,
+  `_isValidAutoTarget(_predictiveCandidate) 直式 至少 3 处 (monitor/exhaust/rate-limit) · got ${directValidUses.length}`,
+);
+
+// —— toggleSkip 即时联动失效 ——
+assert(
+  /acc3\.skipAutoSwitch\s*&&\s*_predictiveCandidate\s*===\s*msg\.index/.test(
+    code,
+  ),
+  "toggleSkip 手动锁 → 若为 _predictiveCandidate 即时失效",
+);
+assert(
+  code.includes("🔒 lock:") && code.includes("即时作废"),
+  "toggleSkip 失效联动有日志追迹",
+);
+
+// —— copyAllAccounts 消息处理 ——
+assert(
+  /case\s+["']copyAllAccounts["']\s*:/.test(code),
+  "copyAllAccounts 后端 case 分支存在",
+);
+assert(
+  code.includes("_store.accounts.map") &&
+    code.includes("a.password ? `${a.email}:${a.password}` : a.email"),
+  "copyAllAccounts 格式 email:password (无密码仅 email)",
+);
+assert(
+  code.includes('lines.join("\\n")') || code.includes("lines.join('\\n')"),
+  "copyAllAccounts 换行连接 (一行一个)",
+);
+assert(
+  code.includes("账号池为空") || code.includes("pool 为空"),
+  "copyAllAccounts 空池防护",
+);
+assert(/已导出\s*\$\{total\}/.test(code), "copyAllAccounts toast 显示导出总数");
+
+// —— UI 一键导出按钮 ——
+assert(/onclick="copyAll\(\)"/.test(code), "UI 有 copyAll() onclick 按钮");
+assert(
+  /function\s+copyAll\s*\(\s*\)\s*\{[^}]*copyAllAccounts/.test(code),
+  "UI copyAll() 函数 postMessage copyAllAccounts",
+);
+assert(code.includes("一键导出"), "UI 按钮文本含 '一键导出'");
+
+// —— v17.42.7 版本描述锚 ——
+assert(
+  /17\.42\.7:?\s*锁🔒\s*全链[路]?贯通/.test(code),
+  "WAM_VERSION 注释锚 '17.42.7: 锁🔒 全链[路]贯通'",
+);
+
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.42.6 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.42.7 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);

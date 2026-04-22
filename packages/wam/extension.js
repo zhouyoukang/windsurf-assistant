@@ -435,7 +435,7 @@ let RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 let RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.42.6"; // v17.42.6: 死代理 env 自净 · 反者道之动 — 启动 TCP 验活 · 自动剔除 env 中已停机的 HTTPS_PROXY/HTTP_PROXY, 根治新加账号因 env 污染致 login 四路全死的 verify-gate 探测失败 (Node 22+ https.request 原生读 env 亦挡不住)
+const WAM_VERSION = "17.42.7"; // v17.42.7: 锁🔒 全链路贯通 + 一键导出 — 根治 stale _predictiveCandidate 绕过 skipAutoSwitch 的 bug (msgAnchor/monitor/exhaust 三路均经 _isValidAutoTarget 四辨); toggleSkip 即时联动 invalidate; 新增 copyAllAccounts 批量剪贴板导出
 
 let _store = null;
 let _sidebarProvider = null;
@@ -583,8 +583,9 @@ async function _msgAnchorDoSwitch(source) {
     log(`msgAnchor[${source}]: 活跃账号已锁定, 跳过`);
     return;
   }
+  // v17.42.7 锁🔒贯通: stale _predictiveCandidate 必经 _isValidAutoTarget 四辨 (含 skipAutoSwitch)
   let bestI =
-    _predictiveCandidate >= 0
+    _predictiveCandidate >= 0 && _isValidAutoTarget(_predictiveCandidate)
       ? _predictiveCandidate
       : _store.getBestIndex(activeI, true);
   if (bestI < 0) {
@@ -3194,6 +3195,24 @@ function _invalidateProxyCache() {
   _proxyCache = null;
   _proxyCacheTs = 0;
   _proxyDetectPromise = null;
+}
+
+// ── v17.42.7: 锁🔒 全链路贯通 — 太上不知有之 · 以神遇不以目视 ──
+// 根因: stale _predictiveCandidate 在 msgAnchor/monitor/exhaust 三处被信任使用,
+//       只验 password/claimed/blacklist, 漏验 skipAutoSwitch —
+//       用户锁号后, 若该号仍是 _predictiveCandidate, 自动切号仍会落到已锁号上
+// 治法: 单一真相 _isValidAutoTarget(i) · 所有自动切号候选必经此门 ·
+//       凡四辨 (账号存在/有密码/未锁/未被他占) 一不齐即视为无效
+function _isValidAutoTarget(i) {
+  if (i < 0 || !_store) return false;
+  const acc = _store.get(i);
+  if (!acc || !acc.password) return false;
+  if (acc.skipAutoSwitch) return false; // 用户手动锁 → 禁止作为切号目标
+  if (_isClaimedByOther(acc.email)) return false;
+  // pool 黑名单 / 临时拉黑 (同 getBestIndex 一致)
+  const ek = acc.email.toLowerCase();
+  if (_tokenPoolBlacklist && _tokenPoolBlacklist.has(ek)) return false;
+  return true;
 }
 
 // ── v17.42.6: 死代理 env 自净 — 反者道之动 · 太上不知有之 ──
@@ -7175,16 +7194,10 @@ async function monitorActiveQuota() {
         } else if (injectCooldown && !_switching) {
           // 注入失败冷却中 — 孤能浊以静之徐清
         } else if (autoRotate && !_switching && !switchCooldown) {
-          let bestI = _predictiveCandidate >= 0 ? _predictiveCandidate : -1;
-          if (bestI >= 0) {
-            const candAcc = _store.get(bestI);
-            if (
-              !candAcc ||
-              !candAcc.password ||
-              _isClaimedByOther(candAcc.email)
-            )
-              bestI = -1;
-          }
+          // v17.42.7 锁🔒贯通: 统一由 _isValidAutoTarget 四辨 (含 skipAutoSwitch)
+          let bestI = _isValidAutoTarget(_predictiveCandidate)
+            ? _predictiveCandidate
+            : -1;
           if (bestI < 0) bestI = _store.getBestIndex(activeI, true);
 
           if (bestI >= 0) {
@@ -7344,10 +7357,10 @@ async function monitorActiveQuota() {
             : snapWeekly < _getAutoSwitchThreshold()
               ? `Weekly耗尽(${snapWeekly}%)`
               : `Daily耗尽(${result.daily}%)`;
-          let bestI =
-            _predictiveCandidate >= 0
-              ? _predictiveCandidate
-              : _store.getBestIndex(activeI, true);
+          // v17.42.7 锁🔒贯通: 统一由 _isValidAutoTarget 四辨 (含 skipAutoSwitch)
+          let bestI = _isValidAutoTarget(_predictiveCandidate)
+            ? _predictiveCandidate
+            : _store.getBestIndex(activeI, true);
           if (bestI >= 0) {
             let bestAcc = _store.get(bestI);
             log(`⚡ 耗尽保护: ${reason} → ${bestAcc.email.substring(0, 20)}`);
@@ -7855,10 +7868,39 @@ async function handleWebviewMessage(msg) {
       }
       break;
     }
+    // v17.42.7: 一键导出 — 批量复制所有账号到剪贴板 (email:password · 无密码仅 email · 一行一个)
+    case "copyAllAccounts": {
+      if (!_store || !_store.accounts || !_store.accounts.length) {
+        broadcastMessage({ type: "toast", text: "账号池为空" });
+        break;
+      }
+      const lines = _store.accounts.map((a) =>
+        a.password ? `${a.email}:${a.password}` : a.email,
+      );
+      const text = lines.join("\n");
+      await vscode.env.clipboard.writeText(text);
+      const hasPw = _store.accounts.filter((a) => a.password).length;
+      const total = _store.accounts.length;
+      log(
+        `copyAllAccounts: ${total} 账号已导出到剪贴板 (${hasPw} 含密码 / ${total - hasPw} 仅邮箱)`,
+      );
+      broadcastMessage({
+        type: "toast",
+        text: `已导出 ${total} 个账号到剪贴板 (${hasPw} 含密码)`,
+      });
+      break;
+    }
     case "toggleSkip": {
       const acc3 = _store.get(msg.index);
       if (acc3) {
         acc3.skipAutoSwitch = !acc3.skipAutoSwitch;
+        // v17.42.7 锁🔒贯通: 即时联动 — 若刚锁的正是 _predictiveCandidate, 立刻失效
+        if (acc3.skipAutoSwitch && _predictiveCandidate === msg.index) {
+          _predictiveCandidate = -1;
+          log(
+            `🔒 lock: ${acc3.email.substring(0, 20)} 是 _predictiveCandidate → 即时作废`,
+          );
+        }
         _store.save();
         refreshAll();
       }
@@ -8365,8 +8407,9 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
   </div>
 </div>
 
-<div class="sec">
+<div class="sec" style="display:flex;justify-content:space-between;align-items:center">
   <span>&#9660; 账号列表</span>
+  <button onclick="copyAll()" title="一键复制所有账号到剪贴板 (email:password 格式 · 每行一个)" style="background:#2d3f5c;color:var(--blue);border:1px solid #3a5178;padding:2px 8px;border-radius:3px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">&#128203; 一键导出</button>
 </div>
 <div id="list">${rows}</div>
 
@@ -8384,6 +8427,8 @@ function sw(i) { send('switch', i); }
 function cp(i) { vscode.postMessage({type:'copyAccount', index:i}); }
 function rm(i) { send('remove', i); }
 function sk(i) { vscode.postMessage({type:'toggleSkip', index:i}); }
+// v17.42.7: 一键导出所有账号到剪贴板
+function copyAll() { vscode.postMessage({type:'copyAllAccounts'}); }
 
 function toggleAdd() {
   const body = document.getElementById('addBody');
@@ -9599,10 +9644,10 @@ function activate(context) {
             .getConfiguration("wam")
             .get("autoRotate", true);
           if (!autoRotate) return;
-          const bestI =
-            _predictiveCandidate >= 0
-              ? _predictiveCandidate
-              : _store.getBestIndex(_store.activeIndex, true);
+          // v17.42.7 锁🔒贯通: rate-limit 拦截也须 _isValidAutoTarget 四辨 (含 skipAutoSwitch)
+          const bestI = _isValidAutoTarget(_predictiveCandidate)
+            ? _predictiveCandidate
+            : _store.getBestIndex(_store.activeIndex, true);
           if (bestI < 0) {
             log("rate-limit: no available account");
             return;
