@@ -1,0 +1,107 @@
+{
+  "name": "dao-agi",
+  "displayName": "道Agent · 无感切号 (万法归宗)",
+  "description": "道Agent 本源 (道德经 SP 注入 + 双按钮热切换 + 本源一览 essence webview) v17.53 · 五层锚定 · 一网打尽 · 万流归宗 · 并 WAM 无感切号 v17.42.12 (百号轮转 · Token Pool · Devin-first · v17.42.12 @vscode/proxy-agent本源突破 proxySupport=on · v17.42.10 inject-dead 双路径归档 · v17.42.8 env 同步隔离) · 大制不割 · 道法自然",
+  "version": "17.58.0",
+  "publisher": "dao-agi",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "repository": { "type": "git", "url": "https://github.com/zhouyoukang/windsurf-assistant.git" },
+  "homepage": "https://github.com/zhouyoukang/windsurf-assistant",
+  "icon": "media/icon.png",
+  "categories": ["AI", "Other"],
+  "keywords": ["windsurf", "cascade", "agent", "dao", "system-prompt", "account", "quota", "switch", "auto"],
+  "activationEvents": ["*"],
+  "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": true, "description": "dao-agi runs in all workspaces" },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wam-container",
+          "title": "道Agent · 万法归宗",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "wam-container": [
+        {
+          "id": "dao.essence",
+          "name": "道Agent · 本源一览",
+          "type": "webview"
+        },
+        {
+          "id": "dao.toggle",
+          "name": "道Agent · 模式",
+          "type": "webview"
+        },
+        {
+          "id": "wam.panel",
+          "name": "切号面板",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "wam.originInvert",      "title": "道Agent: 启 (道德经 SP · 绝侧信道)", "category": "道Agent" },
+      { "command": "wam.originPassthrough", "title": "道Agent: 启 (官方原味 · 零改写)",     "category": "道Agent" },
+      { "command": "wam.originOff",         "title": "道Agent: 关闭 (restore 锚 · kill proxy)", "category": "道Agent" },
+      { "command": "wam.openEditor",        "title": "切号: 管理面板",         "category": "道Agent" },
+      { "command": "wam.status",            "title": "切号: 状态",             "category": "道Agent" },
+      { "command": "wam.wamMode",           "title": "切号: WAM 模式 (自动轮转)", "category": "道Agent" },
+      { "command": "wam.officialMode",      "title": "切号: 官方登录模式 (暂停轮转)", "category": "道Agent" },
+      { "command": "wam.switchAccount",     "title": "切号: 切换账号",         "category": "道Agent" },
+      { "command": "wam.panicSwitch",       "title": "切号: 紧急切换",         "category": "道Agent" },
+      { "command": "wam.refreshAll",        "title": "切号: 刷新全部",         "category": "道Agent" },
+      { "command": "wam.addAccount",        "title": "切号: 添加账号",         "category": "道Agent" },
+      { "command": "wam.autoRotate",        "title": "切号: 智能轮转",         "category": "道Agent" },
+      { "command": "wam.injectToken",       "title": "切号: 注入 Token",       "category": "道Agent" },
+      { "command": "wam.verifyAll",         "title": "切号: 验证清理 (剔除过期/无效号)", "category": "道Agent" },
+      { "command": "wam.scanExpiry",        "title": "切号: 刷新有效期",       "category": "道Agent" },
+      { "command": "wam.selfTest",          "title": "切号: 自诊断",           "category": "道Agent" },
+      { "command": "wam.diagWrite",         "title": "切号: 写盘诊断",         "category": "道Agent" },
+      { "command": "wam.restore",           "title": "切号: 从归档恢复账号",   "category": "道Agent" },
+      { "command": "wam.clearBlacklist",    "title": "切号: 清空黑名单 (Devin 复活)", "category": "道Agent" },
+      { "command": "wam.testDevinSwitch",   "title": "切号: 测试 Devin 链路",  "category": "道Agent" },
+      { "command": "wam.checkUpdate",       "title": "道Agent: 检查更新",      "category": "道Agent" },
+      { "command": "wam.verifyEndToEnd",    "title": "全链路自检 (E2E)",       "category": "道Agent" },
+      { "command": "dao.toggleMode",        "title": "道Agent: 切换模式 (道/官方)", "category": "道Agent" },
+      { "command": "wam.showEssence",       "title": "道Agent: 本源一览 (观注入)", "category": "道Agent" }
+    ],
+    "configuration": {
+      "title": "道Agent · 切号",
+      "properties": {
+        "wam.autoRotate":           { "type": "boolean", "default": true, "description": "额度变动时自动切到最优账号 (唯一用户开关 · 其他参数内化)" },
+        "wam.productName":          { "type": "string", "default": "", "description": "产品名 (留空=自动检测)" },
+        "wam.dataDir":              { "type": "string", "default": "", "description": "数据目录 (留空=自动检测)" },
+        "wam.wamHotDir":            { "type": "string", "default": "", "description": "WAM 工作目录 (留空=~/.wam-hot)" },
+        "wam.relayHost":            { "type": "string", "default": "", "description": "中继域名 (留空=禁用)" },
+        "dao-agi.dao.banner":       { "type": "boolean", "default": true, "description": "启动时显示道德经横幅" },
+        "dao.origin.port":          { "type": "number",  "default": 8889, "description": "源.js 反代端口 (唯变所适)" },
+        "dao.origin.defaultMode":   { "type": "string",  "default": "invert", "enum": ["invert","passthrough","off"], "description": "首次激活的默认模式 (invert=道/passthrough=官方/off=关)" },
+        "wam.monitorIntervalMs":    { "type": "number", "default": 3000 },
+        "wam.scanIntervalMs":       { "type": "number", "default": 45000 },
+        "wam.tokenCacheTtlMin":     { "type": "number", "default": 50 },
+        "wam.autoSwitchThreshold":  { "type": "number", "default": 5 },
+        "wam.predictiveThreshold":  { "type": "number", "default": 25 },
+        "wam.preferDevinFirst":     { "type": "boolean", "default": true },
+        "wam.firebaseMaxTimeoutMs": { "type": "number",  "default": 4000 },
+        "wam.autoUpdate.enabled":   { "type": "boolean", "default": true },
+        "wam.autoUpdate.notifyUser":{ "type": "boolean", "default": false },
+        "wam.messageAnchor.enabled":{ "type": "boolean", "default": true }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package --no-dependencies --allow-missing-repository -o dao-agi.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.84.0",
+    "@vscode/vsce": "^3.6.0"
+  }
+}

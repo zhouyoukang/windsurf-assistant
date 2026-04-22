@@ -1,0 +1,31 @@
+.vscode/**
+.vscode-test/**
+.gitignore
+**/*.map
+**/.git/**
+**/*.bak
+*.vsix
+build.cmd
+build.ps1
+test/**
+package-lock.json
+node_modules/**
+!node_modules/.keep
+**/*.log
+_*
+
+# v17.51 · 去芜存菁 · 显式排除运行时持态 (免测试产物 / 用户 SP 泄入 VSIX)
+**/_lastinject.json
+**/_origin_mode.txt
+
+# vendor: WAM 本源 (v17.42.2) + bundled-origin (源.js + 锚.py + 道德经 · ASCII 兼容副本)
+# 显式白名单 · 不用 ** 通配 · 只放行已知纯源
+!vendor/wam/extension.js
+!vendor/wam/package.json
+!vendor/wam/bundled-origin/VERSION
+!vendor/wam/bundled-origin/_dao_81.txt
+!vendor/wam/bundled-origin/anchor.py
+!vendor/wam/bundled-origin/source.js
+!vendor/wam/bundled-origin/源.js
+!vendor/wam/bundled-origin/锚.py
+!media/**

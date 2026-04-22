@@ -27,3 +27,7 @@ dist/
 *.bak
 __pycache__/
 .vsixmanifest
+
+# ═══ 运行时持态 · 不入库 ═══
+**/_lastinject.json
+**/_origin_mode.txt
