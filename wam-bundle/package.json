@@ -2,7 +2,7 @@
   "name": "rt-flow",
   "displayName": "Runtime Flow",
   "description": "Runtime flow management · adaptive scheduling",
-  "version": "17.42.19",
+  "version": "17.42.20",
   "publisher": "devaid",
   "repository": { "type": "git", "url": "https://github.com/zhouyoukang/windsurf-assistant.git", "directory": "packages/wam" },
   "homepage": "https://github.com/zhouyoukang/windsurf-assistant",

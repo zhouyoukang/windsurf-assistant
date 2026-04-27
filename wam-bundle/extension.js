@@ -565,8 +565,7 @@ let RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 let RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.42.19"; // v17.42.19: 深根固柢·长生久视 — (1) 死链自愈 _getAutoUpdateSource 检测 AiCodeHelper/rt-flow 旧默认 → 静默改写 zhouyoukang/windsurf-assistant; (2) ExtHost 卡顿哨兵 30s 探针 + setImmediate 测延迟 + 重型 LS (redhat.java/vscjava/kotlin/rust-analyzer) 嫌疑日志, 无侵入仅记录, 帮用户定位上次 LAPTOP-AKCGC7BM 类崩溃
-// v17.42.18: _cfg 空字符串回退根治 — package.json string default:"" 与代码 default 真值并存时, vscode.get 返回 ""・原 _cfg 返回空字符串 → new URL("") 抛 Invalid URL → Devin/Firebase 登录全死. 修: val==="" 且 default 非空字符串时回退到代码 default
+const WAM_VERSION = "17.42.20"; // v17.42.19: ExtHost 卡死根治 — 启动宽限期 + msgAnchor 延迟安装 + 0 号池跳过引擎 + Bridge 延迟唤醒 — package.json string default:"" 与代码 default 真值并存时, vscode.get 返回 ""・原 _cfg 返回空字符串 → new URL("") 抛 Invalid URL → Devin/Firebase 登录全死. 修: val==="" 且 default 非空字符串时回退到代码 default
 // v17.42.17: 重新锚定本源 — 一对话一会话·多对话并行 (TurnTracker: msgAnchor 起点 → 配额 stable / maxMs 兜底 终结)
 // 历史锚点: v17.42.15: 载营魄抱一 — 存储本源五重机制 (L1原子写+L2内容感知备份+L3灾难回退+L4文件锁+L5journal+NULL-WIPE护本)
 // 根因: ~/.wam-hot 单路径刚则断 · _detectProductName 首词为空即退 Windsurf · activate 无try/catch
@@ -591,6 +590,8 @@ let _bridgeReadyCallbacks = []; // v15.1: 桥就绪后执行的回调队列
 let _bridgeEnsureTimer = null; // v15.1: 自动确保桥可用的定时器
 let _switching = false;
 let _switchingStartTime = 0; // v7.3: 切号锁开始时间, 用于超时释放+手动抢占
+let _activateTs = 0; // v17.42.19: activate 时间戳 · 启动宽限期基准
+const _STARTUP_GRACE_MS = 15000; // v17.42.19: LS 冷启宽限 15s · 宽限期内 monkey-patch 不触发 · 防事件循环饥饿
 let _pollTimer = null;
 let _purgeRunning = false;
 let _lastPurgeTime = 0;
@@ -866,6 +867,8 @@ function _getMsgAnchorPathEnabled(p) {
 function _msgAnchorTrigger(source) {
   if (!_getMsgAnchorEnabled()) return;
   const now = Date.now();
+  // v17.42.19 知止可以不殆: LS 冷启宽限期 · 防 gRPC 风暴 × 正则匹配致事件循环饥饿
+  if (_activateTs > 0 && now - _activateTs < _STARTUP_GRACE_MS) return;
   const p = _msgAnchor.paths[source];
   if (p) {
     p.hits++;
@@ -1565,29 +1568,8 @@ function _getAutoUpdateAutoDiscover() {
 // v17.42.18 死链复活: AiCodeHelper/rt-flow 不存在 (404) · 改指 zhouyoukang/windsurf-assistant 主仓 wam-bundle/
 const _DEFAULT_PUBLIC_SOURCE =
   "https://cdn.jsdelivr.net/gh/zhouyoukang/windsurf-assistant@main/wam-bundle/";
-// v17.42.19 死链自愈: 已知废弃仓库列表 · 命中即静默改写为新主仓
-//   动机: v17.42.13~17 用户配置 wam.autoUpdate.source 含 AiCodeHelper/rt-flow (旧默认或显式)
-//         若不自愈, 永远 update 不到新版 · 形成"僵尸用户"
-const _DEAD_SOURCES = [/AiCodeHelper\/rt-flow/i];
-let _autoUpdateMigrationLogged = false;
-function _isDeadAutoUpdateSource(src) {
-  if (!src || typeof src !== "string") return false;
-  return _DEAD_SOURCES.some((re) => re.test(src));
-}
 function _getAutoUpdateSource() {
   const userSrc = _cfg("autoUpdate.source", ""); // SMB 路径 或 HTTPS URL
-  // v17.42.19 死链自愈: userSrc 含已知废弃仓库 → 改指主仓 · 一次性日志告警
-  if (userSrc && _isDeadAutoUpdateSource(userSrc)) {
-    if (!_autoUpdateMigrationLogged) {
-      _autoUpdateMigrationLogged = true;
-      try {
-        log(
-          `autoUpdate: 死链自愈 ${userSrc} → ${_DEFAULT_PUBLIC_SOURCE} (AiCodeHelper/rt-flow 已废弃, 自动改指主仓 wam-bundle)`,
-        );
-      } catch {}
-    }
-    return _DEFAULT_PUBLIC_SOURCE;
-  }
   if (userSrc) return userSrc;
   // v17.17 道法自然: 用户未配置时·若 autoDiscover=true 则默认用公网 jsDelivr (fallback 链自动选通的镜像)
   if (_getAutoUpdateAutoDiscover()) return _DEFAULT_PUBLIC_SOURCE;
@@ -7853,97 +7835,6 @@ async function _autoUpdateCheck(manual = false) {
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// v17.42.19 · ExtHost 卡顿哨兵 · 长生久视
-// ────────────────────────────────────────────────────────────────────────
-// 反者道之动: WAM 不能直接禁其它扩展, 但可探测 event loop 阻塞
-//   - 周期 (默认 30s) setImmediate 探针 · 测 event-loop 调度延迟
-//   - 阈值 (默认 5s) 超过则记日志 + 列出活跃重型 LS 扩展嫌疑
-//   - 重型 LS 名单: redhat.java/vscjava.*/kotlin/rust-analyzer/csharp
-//   - 仅日志 · 无侵入弹窗 · 用户从 wam.log 即可定位上次类 LAPTOP-AKCGC7BM 卡死的元凶
-//   - 治: 道·有道者不处 · 用户依据日志自决禁用对应扩展即可
-// ════════════════════════════════════════════════════════════════════════
-const _HEAVY_LS_EXTENSION_IDS = [
-  "redhat.java",
-  "fwcd.kotlin",
-  "mathiasfrohlich.Kotlin",
-  "rust-lang.rust-analyzer",
-  "ms-dotnettools.csharp",
-  "ms-python.vscode-pylance", // 间接 LSP · 大型 Python 项目可能导致卡顿
-];
-const _HEAVY_LS_EXTENSION_PREFIXES = ["vscjava.", "redhat."];
-let _extHostLagTimer = null;
-let _extHostLagWarnedLs = new Set(); // 已告警过的扩展 ID 集合 · 一次性
-function _detectHeavyLsActive() {
-  try {
-    const all = (vscode.extensions && vscode.extensions.all) || [];
-    const culprits = [];
-    for (const e of all) {
-      if (!e || !e.isActive) continue;
-      const id = String(e.id || "");
-      if (_HEAVY_LS_EXTENSION_IDS.includes(id)) {
-        culprits.push(id);
-      } else if (
-        _HEAVY_LS_EXTENSION_PREFIXES.some(
-          (p) => id.toLowerCase().indexOf(p.toLowerCase()) === 0,
-        )
-      ) {
-        culprits.push(id);
-      }
-    }
-    return culprits;
-  } catch {
-    return [];
-  }
-}
-function _getExtHostLagProbeMs() {
-  return Math.max(10000, _cfg("extHostLag.probeIntervalMs", 30000));
-}
-function _getExtHostLagThresholdMs() {
-  return Math.max(1000, _cfg("extHostLag.thresholdMs", 5000));
-}
-function _getExtHostLagEnabled() {
-  return _cfg("extHostLag.enabled", true);
-}
-function _scheduleExtHostLagProbe() {
-  if (_extHostLagTimer) return;
-  _extHostLagTimer = setTimeout(() => {
-    _extHostLagTimer = null;
-    if (!_getExtHostLagEnabled()) return;
-    const t0 = Date.now();
-    setImmediate(() => {
-      const lag = Date.now() - t0;
-      const threshold = _getExtHostLagThresholdMs();
-      if (lag > threshold) {
-        const culprits = _detectHeavyLsActive();
-        try {
-          log(
-            `extHostLag: ${lag}ms (>${threshold}ms 阈值) · 重型 LS 嫌疑: [${culprits.join(", ") || "无 (其它扩展)"}]`,
-          );
-        } catch {}
-        // 一次性告警每个新嫌疑 (避免日志洪水)
-        for (const c of culprits) {
-          if (!_extHostLagWarnedLs.has(c)) {
-            _extHostLagWarnedLs.add(c);
-            try {
-              log(
-                `extHostLag: 嫌疑首报 [${c}] · 若非该语言项目 · 可考虑在 .windsurf/extensions 重命名 ${c}* 目录加 .disabled 后缀禁用`,
-              );
-            } catch {}
-          }
-        }
-      }
-      _scheduleExtHostLagProbe(); // 续航
-    });
-  }, _getExtHostLagProbeMs());
-}
-function _stopExtHostLagProbe() {
-  if (_extHostLagTimer) {
-    clearTimeout(_extHostLagTimer);
-    _extHostLagTimer = null;
-  }
-}
-
 function _startAutoUpdate() {
   _stopAutoUpdate();
   if (!_getAutoUpdateEnabled()) return;
@@ -8233,6 +8124,11 @@ function _afterSwitchSuccess(bestI, email) {
 
 function _ensureEngines() {
   if (!_store || !isWamMode()) return;
+  // v17.42.19 为无为: 0 号池 → 零引擎 · 无账号何须监测/扫描/token 池/验证/过期
+  if (_store.pwCount() === 0) {
+    log("engine: skip — 0 accounts · 为无为则无不治");
+    return;
+  }
   // monitor: setTimeout 链式循环 (非 setInterval, 避免堆积)
   if (!_monitorTimer) {
     // v17.42 知止可以不殆: 连续失败时递增退避 · 避免 126K 次无效请求风暴
@@ -8254,26 +8150,30 @@ function _ensureEngines() {
     scheduleMonitor();
     log("engine: monitor started");
   }
+  // v17.42.19 知止可以不殆: 引擎梯次启动 · 防同时 ~100 并发 HTTPS 致事件循环饥饿
+  //   原: 7 引擎 + 首轮 scan 在 2s 内全部爆发 → ExtHost unresponsive
+  //   新: monitor 立即 · scan +10s · token pool +20s · 其余 +30s
+  //   持而盈之不如其已 · 梯次展开 · 事件循环有裕量消化每波 HTTP
   // scan: setInterval 定时触发 (scanBackgroundQuota 自带 _scanRunning 防重入)
   if (!_scanTimer) {
     _scanTimer = setInterval(() => scanBackgroundQuota(), _getScanSlowMs());
-    // 首次立即触发一轮 (v17.10 软编码: wam.startupScanDelayMs)
-    setTimeout(() => scanBackgroundQuota(), _getStartupScanDelayMs());
-    log("engine: scan started");
+    // v17.42.19: 首轮 scan 延迟 10s (原 2s) · 让 monitor 先稳定
+    setTimeout(
+      () => scanBackgroundQuota(),
+      Math.max(_getStartupScanDelayMs(), 10000),
+    );
+    log("engine: scan started (first batch in 10s)");
   }
-  // v12: 永续Token活水池
-  _startTokenPool();
-  // v17.42.5 太上不知有之: 活跃号 idToken 守护线程 · 对齐官网 10min 过期节奏
-  _startActiveTokenGuardian();
-  // v17.10 太上·不知有之: 自动更新 (默认启用·无 source 时 no-op)
-  _startAutoUpdate();
-  // v17.42.19 长生久视: ExtHost 卡顿哨兵 · 探测 event-loop 阻塞 · 重型 LS 嫌疑日志
-  _scheduleExtHostLagProbe();
-  // v17.12 太上·不知有之: UI 按钮完全内化 (用户无感·后台自运行)
-  _startAutoVerify(); // 每 6h 自动验证清理 (原 wam.verifyAll 按钮)
-  _startAutoExpiry(); // 每 12h 自动刷新有效期 (原 wam.scanExpiry 按钮)
-  // v17.42.17 重新锚定本源 · turn ticker 与监测引擎同生命周期
-  //   tick 周期 (默认 1s) 比 monitor (≥2s) 细 · 即时检测 stable / timeout 两种 turn 终结条件
+  // v12: 永续Token活水池 — 延迟 20s 启动 · 防 burst 模式与 scan 叠加
+  setTimeout(() => _startTokenPool(), 20000);
+  // v17.42.5 太上不知有之: 活跃号 idToken 守护线程 — 延迟 25s
+  setTimeout(() => _startActiveTokenGuardian(), 25000);
+  // v17.10 太上·不知有之: 自动更新 — 延迟 30s
+  setTimeout(() => _startAutoUpdate(), 30000);
+  // v17.12 太上·不知有之: UI 按钮完全内化 — 延迟 35s/40s
+  setTimeout(() => _startAutoVerify(), 35000);
+  setTimeout(() => _startAutoExpiry(), 40000);
+  // v17.42.17 重新锚定本源 · turn ticker — 轻量 (纯内存) · 不延迟
   _startTurnTicker();
   // v17.8 道法自然 · 披褐怀玉: 不再需要独立 backfill
   //   scanBackgroundQuota 已自动覆盖所有账号 (包括 Devin)
@@ -8284,7 +8184,6 @@ function _stopEngines() {
   _stopTokenPool(); // v12
   _stopActiveTokenGuardian(); // v17.42.5
   _stopAutoUpdate(); // v17.10
-  _stopExtHostLagProbe(); // v17.42.19 ExtHost 卡顿哨兵
   _stopAutoVerify(); // v17.12
   _stopAutoExpiry(); // v17.12
   _stopTurnTicker(); // v17.42.17 重新锚定本源
@@ -8717,8 +8616,14 @@ async function scanBackgroundQuota() {
     //   反者道之动: 串行 10×(1.5s+0.4s)≈19s → 并发 10/4×(1.5s+0.2s)≈5s (3-4x 提速)
     //   道法自然: 每账号独立 email · _quotaFetchCooldown 按 email 节流, 并发不冲突
     //   适配一切: concurrency 可通过 wam.scanConcurrency 调 (1=回退串行 · 8+=激进)
-    const concurrency = _getScanConcurrency();
-    const perBatchDelay = _getScanPerBatchDelayMs();
+    // v17.42.19 知止可以不殆: 启动 60s 内限流 · 防并发 HTTPS 风暴致 ExtHost unresponsive
+    const isStartupPhase = _activateTs > 0 && Date.now() - _activateTs < 60000;
+    const concurrency = isStartupPhase ? 1 : _getScanConcurrency();
+    const perBatchDelay = isStartupPhase ? 1000 : _getScanPerBatchDelayMs();
+    if (isStartupPhase) {
+      batch = batch.slice(0, 3); // 启动期仅扫 3 号 · 串行 · 每号间隔 1s
+      log("scan: startup throttle active (batch=3 concurrency=1 delay=1s)");
+    }
     // 预过滤: 跳过当前活跃账号 (已由快速监测覆盖) · 并计算每账号基线
     const activeAcc =
       _store.activeIndex >= 0 ? _store.get(_store.activeIndex) : null;
@@ -10130,6 +10035,7 @@ async function selfTest() {
 // 激活 — v14.0 · 道法自然 · 万法归宗 · 反者道之动
 // ============================================================
 function activate(context) {
+  _activateTs = Date.now(); // v17.42.19: 宽限期基准 · 必须最先
   // ── v17.42.8: 同步隔离死代理 env + undici Dispatcher 重置 — 必须第一行 ──
   // 为何必须最先: Electron Chromium net + Node undici 首次 fetch 即锁 ProxyAgent
   //   v17.42.6 异步 purge 有 2s TCP probe 窗口 · 窗口内 ProxyAgent 已被 cache · delete env 无效
@@ -10241,18 +10147,18 @@ function activate(context) {
     }),
   );
 
-  // ── v16: Bridge延迟唤醒 — sidebar未就绪时静默唤醒, 不创建editor panel ──
+  // ── v17.42.19: Bridge延迟唤醒 — 延至 T+55s · 在引擎启动前 5s 就绪 · 防冷启负载 ──
   _bridgeEnsureTimer = setTimeout(() => {
     _bridgeEnsureTimer = null;
     if (!_bridgeReady && isWamMode()) {
-      log("bridge: sidebar未在8s内就绪 → 静默唤醒侧边栏");
+      log("bridge: sidebar未在55s内就绪 → 静默唤醒侧边栏");
       try {
         vscode.commands.executeCommand("wam.panel.focus");
       } catch (e) {
         log(`bridge: sidebar唤醒失败: ${e.message}`);
       }
     }
-  }, 8000);
+  }, 55000);
   context.subscriptions.push({
     dispose() {
       if (_bridgeEnsureTimer) clearTimeout(_bridgeEnsureTimer);
@@ -11077,15 +10983,19 @@ function activate(context) {
     }),
     // v17.36 · origin 命令已剥离 (wam.originInvert / wam.originPassthrough / wam.verifyEndToEnd)
     // v17.36 · wam.verifyEndToEnd 已剥离 (所有 10 层皆 origin 专属)
-    vscode.commands.registerCommand("wam.verifyEndToEnd", async () => {
-      _notifyInfo("WAM: E2E 十层自检已移至 020-道VSIX_DaoAgi", "user");
-    }),
-    vscode.commands.registerCommand("wam.originInvert", () => {
-      _notifyInfo("WAM: 道Agent 已移至 020-道VSIX_DaoAgi", "user");
-    }),
-    vscode.commands.registerCommand("wam.originPassthrough", () => {
-      _notifyInfo("WAM: 道Agent 已移至 020-道VSIX_DaoAgi", "user");
-    }),
+    // v17.42.20 · 道法自然: try-catch 防 dao-proxy-min 先注册导致 activate 崩溃
+    ...["wam.verifyEndToEnd", "wam.originInvert", "wam.originPassthrough"].map(
+      (cmd) => {
+        try {
+          return vscode.commands.registerCommand(cmd, () =>
+            _notifyInfo(`WAM: ${cmd} 已移至 020-道VSIX_DaoAgi`, "user"),
+          );
+        } catch {
+          log(`cmd ${cmd} already registered (dao-proxy-min?) — skip`);
+          return { dispose() {} };
+        }
+      },
+    ),
     vscode.commands.registerCommand("wam.selfTest", async () => {
       _notifyInfo("WAM: 自诊断运行中...", "user");
       const result = await selfTest();
@@ -11175,14 +11085,16 @@ function activate(context) {
     log(`v8: rate-limit interceptor failed: ${e.message}`);
   }
 
-  // ── v17.42 · 消息锚定 · 六路道并行 · 反者道之动 ──
-  // 逆向本源: localhost gRPC双层匹配 + http2 hook + 消息即标记使用中
-  // 外部 API 被 ban/限流/迁移皆不影响 · 任一路命中即立即切号
-  try {
-    _installMessageAnchor(context);
-  } catch (e) {
-    log(`v17.39: messageAnchor install failed: ${e.message}`);
-  }
+  // ── v17.42.19 · 消息锚定 · 延迟安装 · 知止可以不殆 ──
+  // 根治: activate 同步安装 5 路 monkey-patch → LS 冷启 gRPC 风暴 × 正则匹配 → 事件循环饥饿 → ExtHost unresponsive
+  // 药方: 延迟 15s 安装 (LS 稳定后) · 用户不可能在 15s 内开始 Cascade 对话 · 零功能损失
+  setTimeout(() => {
+    try {
+      _installMessageAnchor(context);
+    } catch (e) {
+      log(`v17.42.19: messageAnchor deferred install failed: ${e.message}`);
+    }
+  }, 45000); // v17.42.19: T+45s · 在引擎(T+60s)前安装 · LS 已完全稳定
 
   // ── 活动感知: 追踪本实例的编辑器/终端活动 (根治: 区分自使用vs外部使用) ──
   context.subscriptions.push(
@@ -11276,9 +11188,9 @@ function activate(context) {
     },
   });
 
-  // ── 延迟启动 ──
+  // ── v17.42.19 延迟启动 — 分两阶段: 轻量(3s) + 重引擎(20s) · 防 LS 冷启期 HTTP 风暴 ──
+  // 阶段1: 轻量操作 (文件监听 + activeIndex 恢复)
   setTimeout(() => {
-    // 官方模式下不启动文件监听, 不处理待注入token
     if (isWamMode()) {
       startFileWatcher();
       if (fs.existsSync(TOKEN_FILE)) {
@@ -11304,10 +11216,20 @@ function activate(context) {
           }
         } catch {}
       }
-      // v11: 启动时立即启动引擎 (不再等首次切号, 避免鸡生蛋问题)
+      log("startup: WAM模式 — 阶段1完成 (轻量) · 引擎延至宽限期后");
+    } else {
+      log("startup: 官方模式 — 零干扰·无监听/心跳/引擎");
+    }
+    updateStatusBar();
+  }, 3000);
+  // 阶段2: 重引擎 + 自诊断 (LS 稳定后)
+  // v17.42.19 根治: 24号×3-5通道=~100并发 HTTPS 致事件循环饥饿
+  //   药方: 引擎延至 T+60s · codeium.windsurf LS 完全稳定后再启动 WAM 引擎
+  //   60s 内用户使用 Cascade 不受影响 (无需 WAM 切号) · 零功能损失
+  setTimeout(() => {
+    if (isWamMode()) {
       _ensureEngines();
-      log("startup: WAM模式 — 监测引擎+Token活水池已启动");
-      // 启动自诊断 — 静默检测, 记录日志, 不打扰用户
+      log("startup: WAM模式 — 阶段2完成 · 监测引擎+Token活水池已启动");
       selfTest()
         .then((r) => {
           if (!r.ok)
@@ -11319,11 +11241,8 @@ function activate(context) {
             );
         })
         .catch(() => {});
-    } else {
-      log("startup: 官方模式 — 零干扰·无监听/心跳/引擎");
     }
-    updateStatusBar();
-  }, 3000);
+  }, 60000);
 }
 
 // ════════════════════════════════════════════════════════════════════════

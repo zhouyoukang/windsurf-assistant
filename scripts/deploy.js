@@ -39,11 +39,15 @@ const h = (p) => {
 const TARGETS = {
   141: {
     label: "141 本机",
-    extRoot: path.join(process.env.USERPROFILE || "", ".windsurf", "extensions"),
+    extRoot: path.join(
+      process.env.USERPROFILE || "",
+      ".windsurf",
+      "extensions",
+    ),
   },
   179: {
     label: "179 远程",
-    extRoot: "//192.168.31.179/C$/Users/32286/.windsurf/extensions",
+    extRoot: "//192.168.31.179/C$/Users/zhouyoukang/.windsurf/extensions",
   },
 };
 
@@ -102,9 +106,7 @@ function deployOne(label, extRoot) {
     data = [];
   }
   const before = data.length;
-  data = data.filter(
-    (e) => !(e.identifier && e.identifier.id === extId),
-  );
+  data = data.filter((e) => !(e.identifier && e.identifier.id === extId));
   console.log(`  extensions.json: removed ${before - data.length} old`);
   data.push({
     identifier: { id: extId, uuid: extId },
@@ -150,8 +152,7 @@ function deployOne(label, extRoot) {
 }
 
 console.log(`deploy: ${pkg}@${version} → ${target}`);
-const targets =
-  target === "both" ? ["141", "179"] : [target];
+const targets = target === "both" ? ["141", "179"] : [target];
 for (const t of targets) {
   const cfg = TARGETS[t];
   if (cfg) deployOne(cfg.label, cfg.extRoot);
