@@ -1,5 +1,5 @@
 /**
- * WAM · rt-flow E2E test · v17.42.13 · 道冲·用之不盈·渊兮似万物之宗 (叠加 v17.42.12 proxy-agent突破 + v17.42.10 inject-dead + v17.42.9 Firebase归档 + v17.42.8 env sync quarantine + v17.42.7 锁🔒 + v17.42.6 env自净 + v17.42.5 五刀)
+ * WAM · rt-flow E2E test · v17.42.18 · _cfg空字符串回退根治 (叠加 v17.42.17 重新锚定本源 + v17.42.15 载营魄抱一 + v17.42.14 不冤枉 + v17.42.12 proxy-agent突破 + v17.42.10 inject-dead + v17.42.9 Firebase归档 + v17.42.8 env sync quarantine + v17.42.7 锁🔒 + v17.42.6 env自净 + v17.42.5 五刀)
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.42.13", `version=17.42.13 (got ${pkg.version})`);
+  assert(pkg.version === "17.42.18", `version=17.42.18 (got ${pkg.version})`); // v17.42.18 _cfg 空字符串回退根治
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -103,8 +103,8 @@ const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
   assert(
-    verMatch[1] === "17.42.13",
-    `WAM_VERSION=17.42.13 (got ${verMatch[1]})`,
+    verMatch[1] === "17.42.18",
+    `WAM_VERSION=17.42.18 (got ${verMatch[1]})`, // v17.42.18 _cfg 空字符串回退根治
   );
 }
 
@@ -1704,10 +1704,433 @@ assert(
   "v17.42.12 历史锚点保留 (向后兼容/审计)",
 );
 
+// ════════════════════════════════════════════════════════════
+section(
+  "L29: v17.42.14 不冤枉 (purge Devin网络/代理错→skip · 镜像Firebase路径)",
+);
+
+// —— 根因锚点: verifyAndPurgeExpired Devin 路径网络错误 skip ——
+// 179机器 127.0.0.1:7799 死代理导致4通道全失败 → 10号被误判 devin_dead 归档
+// 修复: 镜像 Firebase 路径 — 永久业务错才归档, 网络/代理错 skip 保留不冤枉
+
+// 1. verifyAndPurgeExpired Devin 路径含 permanentDevinPat
+const purgeFrag = code.match(
+  /async function verifyAndPurgeExpired[\s\S]{0,20000}?\n\}/,
+);
+assert(purgeFrag && purgeFrag[0], "verifyAndPurgeExpired 函数体可提取");
+if (purgeFrag && purgeFrag[0]) {
+  const body = purgeFrag[0];
+  // Devin 路径出现 permanentDevinPat 变量
+  assert(
+    /permanentDevinPat/.test(body),
+    "verifyAndPurgeExpired Devin 路径含 permanentDevinPat (永久错判断)",
+  );
+  // Devin 路径含 "网络/代理错误" skip 日志
+  assert(
+    /网络\/代理错误/.test(body) || /DEVIN skip.*网络/.test(body),
+    "verifyAndPurgeExpired Devin 路径含 '网络/代理错误' skip 日志",
+  );
+  // permanentDevinPat 包含 invalid|not_found|disabled|wrong
+  assert(
+    /invalid\|not\[\\s_-\]\?found\|disabled\|wrong\|email/.test(body) ||
+      /invalid.*not.*found.*disabled.*wrong/.test(body),
+    "permanentDevinPat 包含 invalid/not_found/disabled/wrong/email 业务错特征",
+  );
+  // 与 Firebase 路径对称: Firebase 路径有 INVALID|NOT_FOUND|DISABLED|WRONG
+  assert(
+    /INVALID\|NOT_FOUND\|DISABLED\|WRONG/.test(body),
+    "Firebase 路径永久错 pattern 保留 (INVALID|NOT_FOUND|DISABLED|WRONG)",
+  );
+}
+
+// 2. 版本锚点: WAM_VERSION = "17.42.14"
+assert(
+  /17\.42\.14.*不冤枉.*purge.*Devin/.test(code) ||
+    /WAM_VERSION\s*=\s*"17\.42\.14"/.test(code),
+  "WAM_VERSION = '17.42.14' 版本锚点存在",
+);
+assert(
+  /v17\.42\.14.*不冤枉/.test(code) || /v17\.42\.14.*purge.*Devin/.test(code),
+  "头注释含 v17.42.14 不冤枉锚点",
+);
+
+// 3. 对称性: Firebase 路径 skip 逻辑未被破坏
+const firebasePurgeFrag = purgeFrag && purgeFrag[0];
+if (firebasePurgeFrag) {
+  assert(
+    /网络\/临时错误.*跳过.*不冤枉/.test(firebasePurgeFrag) ||
+      /purge.*skip.*err/.test(firebasePurgeFrag),
+    "Firebase 路径 skip (网络/临时错误) 仍存在, 未被破坏",
+  );
+}
+
+// ══ L30: v17.42.15 载营魄抱一 · 存储本源五重机制 ══
+section(
+  "L30: v17.42.15 载营魄抱一 (L1原子写+L2内容感知备份+L3灾难回退+L4锁+L5journal+healthCheck)",
+);
+
+// —— L1 原子写 ——
+assert(
+  code.includes("function _atomicWriteJson("),
+  "_atomicWriteJson helper 存在 (tmp→fsync→rename)",
+);
+assert(
+  code.includes(".tmp-") && code.includes("process.pid"),
+  "_atomicWriteJson 使用 .tmp-<pid> 临时文件前缀",
+);
+assert(
+  code.includes("fs.fsyncSync") || code.includes("fsyncSync"),
+  "原子写含 fsync 刷盘 (可配)",
+);
+assert(code.includes("fs.renameSync"), "原子写使用 renameSync 原子替换");
+
+// —— L2 内容感知备份 ——
+assert(
+  code.includes("function _safeReadAccountsFile("),
+  "_safeReadAccountsFile helper 存在 (安全读+校验)",
+);
+assert(
+  code.includes("function _scanAccountBackups("),
+  "_scanAccountBackups helper 存在 (扫描备份目录)",
+);
+assert(
+  /坏件不/.test(code) || /backup skip.*主文件无效/.test(code),
+  "_autoBackup 含内容感知: 坏件不入备份",
+);
+assert(code.includes("_getMaxBackups"), "_getMaxBackups 配置读取 (分层保留)");
+assert(code.includes("_getFsyncEnabled"), "_getFsyncEnabled 配置读取");
+// daily retention logic
+assert(
+  code.includes("daily") && code.includes(".toISOString().slice(0, 10)"),
+  "分层保留含每日最新逻辑 (YYYY-MM-DD 分组)",
+);
+
+// —— L3 灾难回退 ——
+assert(
+  code.includes("function _recoverFromBackupDir("),
+  "_recoverFromBackupDir helper 存在 (灾难回退)",
+);
+assert(/L3.*灾难回退/.test(code), "load() 含 L3 灾难回退注释锚点");
+assert(
+  code.includes("load_disaster_recovery"),
+  "灾难回退 journal 事件类型 load_disaster_recovery",
+);
+
+// —— L4 文件锁 ——
+assert(
+  code.includes("function _acquireStoreLock("),
+  "_acquireStoreLock helper 存在 (文件锁)",
+);
+assert(code.includes("_wam_store.lock"), "锁文件路径 _wam_store.lock");
+assert(
+  code.includes("lock.release") || code.includes("_lock.release"),
+  "save() 中锁释放调用",
+);
+
+// —— L5 事件journal ——
+assert(
+  code.includes("function _appendStoreJournal("),
+  "_appendStoreJournal helper 存在 (事件日志)",
+);
+assert(
+  code.includes("_wam_journal.jsonl"),
+  "journal 文件路径 _wam_journal.jsonl",
+);
+assert(
+  code.includes("7 * 1024 * 1024") || code.includes("7340032"),
+  "journal 7MB 滚动保留",
+);
+
+// —— NULL-WIPE 护本 ——
+assert(
+  /抗误空写/.test(code) ||
+    /null.*wipe.*guard/i.test(code) ||
+    /diskProbe\.validCount/.test(code),
+  "save() 含 NULL-WIPE 护本 (内存空+磁盘有效→不覆写)",
+);
+
+// —— _instanceId ——
+assert(
+  code.includes("let _instanceId") || code.includes("const _instanceId"),
+  "_instanceId 实例标识 (锁+journal 追踪)",
+);
+
+// —— healthCheck 命令 ——
+assert(code.includes('"wam.healthCheck"'), "wam.healthCheck 命令注册");
+assert(
+  code.includes("自动修复") || code.includes("自愈"),
+  "healthCheck 含自愈交互",
+);
+
+// —— package.json 配置 ——
+if (fs.existsSync(pkgPath)) {
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const props =
+    (pkg.contributes &&
+      pkg.contributes.configuration &&
+      pkg.contributes.configuration.properties) ||
+    {};
+  const cmds = (pkg.contributes && pkg.contributes.commands) || [];
+  assert(
+    props["wam.storage.maxBackups"],
+    "wam.storage.maxBackups 在 package.json",
+  );
+  assert(props["wam.storage.fsync"], "wam.storage.fsync 在 package.json");
+  assert(
+    cmds.find((c) => c.command === "wam.healthCheck"),
+    "wam.healthCheck 命令在 package.json",
+  );
+}
+
+// —— 版本锚点 ——
+assert(
+  /v17\.42\.15.*载营魄抱一/.test(code),
+  "头注释含 v17.42.15 载营魄抱一锚点 (向后兼容)",
+);
+assert(/WAM_VERSION\s*=\s*"17\.42\.18"/.test(code), "WAM_VERSION = '17.42.18'");
+
+// ════════════════════════════════════════════════════════════
+section(
+  "L31: v17.42.17 重新锚定本源 · TurnTracker (一对话一会话·多对话并行·配额稳定推断终结)",
+);
+
+// —— TurnTracker 内存本源 ——
+assert(
+  /const _turns = new Map\(\)/.test(code),
+  "_turns Map 内存本源 (turnId → Turn)",
+);
+assert(/let _turnTicker = null/.test(code), "_turnTicker 定时器变量");
+assert(/let _turnSeq = 0/.test(code), "_turnSeq 自增序列");
+assert(/function _newTurnId\(/.test(code), "_newTurnId 函数 (短 id 拼装)");
+
+// —— 12 个核心函数都存在 ——
+const turnFns = [
+  "_startTurn",
+  "_endTurn",
+  "_observeTurnQuotaForEmail",
+  "_tickTurns",
+  "_pruneTurns",
+  "_startTurnTicker",
+  "_stopTurnTicker",
+  "_activeTurnsByEmail",
+  "_hasActiveTurnForEmail",
+  "_activeTurnCount",
+  "_endAllActiveTurnsForEmail",
+  "_getTurnSnapshot",
+];
+for (const fn of turnFns) {
+  assert(new RegExp(`function ${fn}\\b`).test(code), `TurnTracker 函数: ${fn}`);
+}
+
+// —— Turn 配置 6 项 getter (软编码) ——
+const turnGetters = [
+  "_getTurnEnabled",
+  "_getTurnStableMs",
+  "_getTurnMinMs",
+  "_getTurnMaxMs",
+  "_getTurnTickMs",
+  "_getTurnRetainMs",
+];
+for (const g of turnGetters) {
+  assert(new RegExp(`function ${g}\\(`).test(code), `Turn getter: ${g}`);
+}
+
+// —— Turn 字段语义 (status, lastQuotaChangeTs, baselineD/W) ——
+const startTurnIdx = code.indexOf("function _startTurn(");
+if (startTurnIdx > 0) {
+  const block = code.substring(startTurnIdx, startTurnIdx + 1500);
+  assert(/turnId,/.test(block), "_startTurn 写入 turnId");
+  assert(/email: key/.test(block), "_startTurn 写入 email (lower)");
+  assert(/startTs: now/.test(block), "_startTurn 写入 startTs");
+  assert(
+    /lastQuotaChangeTs: now/.test(block),
+    "_startTurn 起步即视为刚变化 (lastQuotaChangeTs=now · stable 从此起算)",
+  );
+  assert(/status: "active"/.test(block), "_startTurn status='active'");
+  assert(
+    /_store\.markInUse\(key\)/.test(block),
+    "_startTurn 投影到 _inUse 协调层 (跨实例可见)",
+  );
+}
+
+// —— _tickTurns: stable / timeout 双终结 ——
+const tickIdx = code.indexOf("function _tickTurns(");
+if (tickIdx > 0) {
+  const block = code.substring(tickIdx, tickIdx + 1200);
+  assert(/age >= maxMs/.test(block), "_tickTurns: age>=maxMs → timeout 兜底");
+  assert(
+    /idle >= stableMs/.test(block),
+    "_tickTurns: idle>=stableMs → stable 自然终结",
+  );
+  assert(
+    /_endTurn\(tid,\s*"timeout"\)/.test(block),
+    "_tickTurns 调 _endTurn(_, 'timeout')",
+  );
+  assert(
+    /_endTurn\(tid,\s*"stable"\)/.test(block),
+    "_tickTurns 调 _endTurn(_, 'stable')",
+  );
+}
+
+// —— _endTurn: 该 email 无其他 active turn 时 clearInUse ——
+const endTurnIdx = code.indexOf("function _endTurn(");
+if (endTurnIdx > 0) {
+  const block = code.substring(endTurnIdx, endTurnIdx + 1000);
+  assert(
+    /_hasActiveTurnForEmail\(t\.email\)/.test(block),
+    "_endTurn 检查该 email 是否还有其他 active turn",
+  );
+  assert(
+    /_store\.clearInUse\(t\.email\)/.test(block),
+    "_endTurn 在无 active 时释放 _inUse (turn 是真理)",
+  );
+}
+
+// —— msgAnchor: 调 _startTurn (替代 markInUse) ——
+const msgAnchorTrigIdx = code.indexOf("function _msgAnchorTrigger");
+if (msgAnchorTrigIdx > 0) {
+  const block = code.substring(msgAnchorTrigIdx, msgAnchorTrigIdx + 1500);
+  assert(
+    /_startTurn\(activeAcc\.email\)/.test(block),
+    "_msgAnchorTrigger 用 _startTurn (开新 turn · 取代 markInUse)",
+  );
+}
+
+// —— monitor + scan 喂 turn ticker (lastQuotaChangeTs) ——
+const monActIdx = code.indexOf("async function monitorActiveQuota");
+if (monActIdx > 0) {
+  const block = code.substring(monActIdx, monActIdx + 4500);
+  assert(
+    /_observeTurnQuotaForEmail\(emailKey,\s*result\.daily,\s*snapWeekly\)/.test(
+      block,
+    ),
+    "monitorActiveQuota 喂 _observeTurnQuotaForEmail (活跃号配额变化)",
+  );
+}
+const scanIdx = code.indexOf("_scanOneAccount");
+if (scanIdx > 0) {
+  const block = code.substring(scanIdx, scanIdx + 3000);
+  assert(
+    /_observeTurnQuotaForEmail\(emailKey,\s*result\.daily,\s*scanSnapW\)/.test(
+      block,
+    ),
+    "scan 喂 _observeTurnQuotaForEmail (切号后旧号 turn 唯一来源)",
+  );
+}
+
+// —— turn ticker 与监测引擎同生命周期 ——
+const ensureIdx = code.indexOf("function _ensureEngines()");
+if (ensureIdx > 0) {
+  const block = code.substring(ensureIdx, ensureIdx + 2500);
+  assert(
+    /_startTurnTicker\(\)/.test(block),
+    "_ensureEngines 启动 _startTurnTicker",
+  );
+}
+const stopIdx = code.indexOf("function _stopEngines()");
+if (stopIdx > 0) {
+  const block = code.substring(stopIdx, stopIdx + 1000);
+  assert(
+    /_stopTurnTicker\(\)/.test(block),
+    "_stopEngines 调用 _stopTurnTicker (deactivate 清理覆盖)",
+  );
+}
+
+// —— AccountStore 新方法 ——
+assert(
+  /isInUseByThisConversation\(email\)\s*\{[\s\S]*_hasActiveTurnForEmail/.test(
+    code,
+  ),
+  "AccountStore.isInUseByThisConversation 委托给 _hasActiveTurnForEmail",
+);
+assert(
+  /getConversationInUseEmails\(\)/.test(code),
+  "AccountStore.getConversationInUseEmails 存在 (多对话并行 · 返数组)",
+);
+assert(
+  /getConversationInUseEmail\(\)/.test(code),
+  "AccountStore.getConversationInUseEmail 保留 (向后兼容 · 首个 active turn)",
+);
+
+// —— UI buildHtml 使用 isInUseByThisConversation ——
+const buildHtmlIdx = code.indexOf("function buildHtml(store)");
+if (buildHtmlIdx > 0) {
+  const block = code.substring(buildHtmlIdx, buildHtmlIdx + 2500);
+  assert(
+    /store\.isInUseByThisConversation\(a\.email\)/.test(block),
+    "buildHtml 用 isInUseByThisConversation (per-row UI)",
+  );
+  assert(
+    /_activeTurnsByEmail\(a\.email\)/.test(block),
+    "buildHtml 取 _activeTurnsByEmail 显真实 turn 持续秒",
+  );
+  assert(
+    /liveInUseLocal/.test(block) && /liveInUseRemote/.test(block),
+    "buildHtml 拆分本对话 turn vs 跨实例协调池计数",
+  );
+}
+
+// —— 状态栏 inUseCount = _activeTurnCount ——
+const updateBarIdx = code.indexOf("function updateStatusBar");
+if (updateBarIdx > 0) {
+  const block = code.substring(updateBarIdx, updateBarIdx + 1500);
+  assert(
+    /_activeTurnCount\(\)/.test(block),
+    "updateStatusBar 用 _activeTurnCount (本对话真值)",
+  );
+}
+
+// —— wam.status: 本对话 vs 协调 ——
+const statusCmdMarker = code.indexOf('registerCommand("wam.status"');
+if (statusCmdMarker > 0) {
+  const block = code.substring(statusCmdMarker, statusCmdMarker + 2000);
+  assert(/_getTurnSnapshot\(\)/.test(block), "wam.status 调 _getTurnSnapshot");
+  assert(
+    /本对话\(/.test(block) && /协调:/.test(block),
+    "wam.status 分显 本对话(N) / 协调",
+  );
+}
+
+// —— QuickPick [使用中] / [协调] 分流 ——
+const quickPickIdx = code.indexOf('registerCommand("wam.switchAccount"');
+if (quickPickIdx > 0) {
+  const block = code.substring(quickPickIdx, quickPickIdx + 3500);
+  assert(
+    /\[使用中/.test(block) && /\[协调\]/.test(block),
+    "wam.switchAccount QuickPick 显 [使用中×N] / [协调]",
+  );
+  assert(
+    /isInUseByThisConversation\(a\.email\)/.test(block),
+    "QuickPick 用 isInUseByThisConversation 区分本对话 turn",
+  );
+}
+
+// —— package.json 6 项 turn 配置 ——
+if (fs.existsSync(pkgPath)) {
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const props = (pkg.contributes || {}).configuration?.properties || {};
+  for (const k of [
+    "wam.turn.enabled",
+    "wam.turn.stableMs",
+    "wam.turn.minMs",
+    "wam.turn.maxMs",
+    "wam.turn.tickIntervalMs",
+    "wam.turn.retainCompletedMs",
+  ]) {
+    assert(props[k], `package.json 含配置 ${k}`);
+  }
+}
+
+// —— 版本锚点 ——
+assert(
+  /v17\.42\.17.*重新锚定本源/.test(code),
+  "头注释含 v17.42.17 重新锚定本源锚点 (再确认)",
+);
+
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.42.13-渊兮似万物之宗 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.42.18-_cfg空回退根治 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);

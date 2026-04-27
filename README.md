@@ -8,8 +8,8 @@
 
 | 子项 | 路径 | 职责 | 状态 |
 |------|------|------|------|
-| **WAM** | [`packages/wam/`](packages/wam/) | 纯无感切号 · 百号轮转 · 消息锚定 · 零中继直连 | ✅ v17.42.13 |
-| **WAM-Proxy** | [`packages/wam-proxy/`](packages/wam-proxy/) | WAM + 反代 · 道德经 SP 注入 · 绝侧信道 | � 未发布 |
+| **WAM** | [`packages/wam/`](packages/wam/) | 纯无感切号 · 百号轮转 · 消息锚定 · 零中继直连 | ✅ v17.42.18 (独立发布 · 含 _cfg 根治) |
+| **WAM-Proxy** | [`packages/wam-proxy/`](packages/wam-proxy/) | WAM + 反代 · 道德经 SP 注入 · 绝侧信道 | 📦 v17.58.0 · 历史冻结归档 (活跃开发已迁 `020-道VSIX_DaoAgi/dao-agi/`) |
 
 ## WAM (packages/wam)
 
@@ -23,11 +23,14 @@
 
 ## WAM-Proxy (packages/wam-proxy)
 
-WAM 切号 + 反代注入道德经. 未发布.
+WAM 切号 + 反代注入道德经. v17.58.0 历史冻结归档.
+
+活跃开发版本已迁移至姊妹目录 `020-道VSIX_DaoAgi/dao-agi/` (当前 v17.61.1).
+本目录作为源代码演化快照保留, `vendor/wam/{extension.js,package.json}` 符号链回 `packages/wam/`, 改一处万物响应.
 
 - **三路径齐断**: plain UTF-8 / nested ChatMessage / raw_sp
 - **16 侧信道标记**: 全部识别并置换
-- **vendor 内嵌 WAM core**: 零依赖独立运行
+- **vendor 内嵌 WAM core**: 零依赖独立运行 (via symlink)
 
 ## 共享基建
 
