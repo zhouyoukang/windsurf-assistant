@@ -1,5 +1,5 @@
 /**
- * WAM · rt-flow E2E test · v17.42.18 · _cfg空字符串回退根治 (叠加 v17.42.17 重新锚定本源 + v17.42.15 载营魄抱一 + v17.42.14 不冤枉 + v17.42.12 proxy-agent突破 + v17.42.10 inject-dead + v17.42.9 Firebase归档 + v17.42.8 env sync quarantine + v17.42.7 锁🔒 + v17.42.6 env自净 + v17.42.5 五刀)
+ * WAM · rt-flow E2E test · v17.42.19 · 深根固柢·长生久视 (叠加 v17.42.18 _cfg空字符串回退根治 + v17.42.17 重新锚定本源 + v17.42.15 载营魄抱一 + v17.42.14 不冤枉 + v17.42.12 proxy-agent突破 + v17.42.10 inject-dead + v17.42.9 Firebase归档 + v17.42.8 env sync quarantine + v17.42.7 锁🔒 + v17.42.6 env自净 + v17.42.5 五刀)
  * Offline static analysis — validates source integrity without runtime
  * Usage: node _wam_e2e.js [extDir]
  */
@@ -42,7 +42,7 @@ if (fs.existsSync(pkgPath)) {
     pkg.main === "./extension.js",
     `main=./extension.js (got ${pkg.main})`,
   );
-  assert(pkg.version === "17.42.18", `version=17.42.18 (got ${pkg.version})`); // v17.42.18 _cfg 空字符串回退根治
+  assert(pkg.version === "17.42.19", `version=17.42.19 (got ${pkg.version})`); // v17.42.19 深根固柢·长生久视
   assert(pkg.engines && pkg.engines.vscode, "engines.vscode defined");
   assert(
     pkg.activationEvents && pkg.activationEvents.includes("onStartupFinished"),
@@ -103,8 +103,8 @@ const verMatch = code.match(/WAM_VERSION\s*=\s*"([^"]+)"/);
 assert(verMatch, "WAM_VERSION constant exists");
 if (verMatch) {
   assert(
-    verMatch[1] === "17.42.18",
-    `WAM_VERSION=17.42.18 (got ${verMatch[1]})`, // v17.42.18 _cfg 空字符串回退根治
+    verMatch[1] === "17.42.19",
+    `WAM_VERSION=17.42.19 (got ${verMatch[1]})`, // v17.42.19 深根固柢·长生久视
   );
 }
 
@@ -1887,7 +1887,7 @@ assert(
   /v17\.42\.15.*载营魄抱一/.test(code),
   "头注释含 v17.42.15 载营魄抱一锚点 (向后兼容)",
 );
-assert(/WAM_VERSION\s*=\s*"17\.42\.18"/.test(code), "WAM_VERSION = '17.42.18'");
+assert(/WAM_VERSION\s*=\s*"17\.42\.19"/.test(code), "WAM_VERSION = '17.42.19'");
 
 // ════════════════════════════════════════════════════════════
 section(
@@ -2127,10 +2127,114 @@ assert(
   "头注释含 v17.42.17 重新锚定本源锚点 (再确认)",
 );
 
+// ════════════════════════════════════════════════════════════
+section("L32: v17.42.19 深根固柢·长生久视 · 死链自愈 + ExtHost 卡顿哨兵");
+
+// —— 死链自愈 ——
+assert(
+  /const _DEAD_SOURCES\s*=\s*\[/.test(code),
+  "_DEAD_SOURCES 已知废弃仓库列表",
+);
+assert(
+  /AiCodeHelper\\\/rt-flow/.test(code),
+  "_DEAD_SOURCES 含 AiCodeHelper/rt-flow (已废弃)",
+);
+assert(
+  /function _isDeadAutoUpdateSource\(/.test(code),
+  "_isDeadAutoUpdateSource 检测函数",
+);
+assert(
+  /_isDeadAutoUpdateSource\(userSrc\)/.test(code),
+  "_getAutoUpdateSource 调用 _isDeadAutoUpdateSource",
+);
+assert(/死链自愈/.test(code), "死链自愈日志锚点");
+assert(
+  /_autoUpdateMigrationLogged/.test(code),
+  "_autoUpdateMigrationLogged 一次性日志标志",
+);
+
+// —— ExtHost 卡顿哨兵 ——
+assert(
+  /const _HEAVY_LS_EXTENSION_IDS\s*=/.test(code),
+  "_HEAVY_LS_EXTENSION_IDS 重型 LS 名单",
+);
+assert(
+  code.includes('"redhat.java"'),
+  "重型 LS 名单含 redhat.java (LAPTOP-AKCGC7BM 元凶)",
+);
+assert(
+  code.includes('"rust-lang.rust-analyzer"'),
+  "重型 LS 名单含 rust-analyzer",
+);
+assert(
+  /const _HEAVY_LS_EXTENSION_PREFIXES\s*=/.test(code),
+  "_HEAVY_LS_EXTENSION_PREFIXES (vscjava./redhat. 前缀)",
+);
+assert(code.includes('"vscjava."'), "重型 LS 前缀含 vscjava.");
+assert(
+  /function _detectHeavyLsActive\(/.test(code),
+  "_detectHeavyLsActive 嫌疑探测器",
+);
+assert(
+  /vscode\.extensions\.all/.test(code),
+  "_detectHeavyLsActive 用 vscode.extensions.all 枚举",
+);
+assert(
+  /function _scheduleExtHostLagProbe\(/.test(code),
+  "_scheduleExtHostLagProbe 探针调度器",
+);
+assert(
+  /function _stopExtHostLagProbe\(/.test(code),
+  "_stopExtHostLagProbe 停止器",
+);
+assert(
+  /setImmediate\(\(\) => \{[\s\S]{0,400}lag/.test(code),
+  "setImmediate + lag 测调度延迟",
+);
+assert(/extHostLag:.*ms.*阈值/.test(code), "extHostLag 日志格式 ms+阈值");
+assert(/嫌疑首报/.test(code), "嫌疑首报一次性日志");
+
+// —— 周期/阈值/开关 配置 ——
+assert(/_getExtHostLagEnabled/.test(code), "_getExtHostLagEnabled 配置 getter");
+assert(/_getExtHostLagProbeMs/.test(code), "_getExtHostLagProbeMs 配置 getter");
+assert(
+  /_getExtHostLagThresholdMs/.test(code),
+  "_getExtHostLagThresholdMs 配置 getter",
+);
+
+// —— start/stop 集成 ——
+assert(
+  /_scheduleExtHostLagProbe\(\)/.test(code),
+  "_startEngines 调用 _scheduleExtHostLagProbe",
+);
+assert(
+  /_stopExtHostLagProbe\(\)/.test(code),
+  "_stopEngines 调用 _stopExtHostLagProbe",
+);
+
+// —— package.json 三新配置 ——
+if (fs.existsSync(pkgPath)) {
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const cfg = (pkg.contributes && pkg.contributes.configuration) || {};
+  const props = cfg.properties || {};
+  assert(props["wam.extHostLag.enabled"], "wam.extHostLag.enabled 配置存在");
+  assert(
+    props["wam.extHostLag.probeIntervalMs"],
+    "wam.extHostLag.probeIntervalMs 配置存在",
+  );
+  assert(
+    props["wam.extHostLag.thresholdMs"],
+    "wam.extHostLag.thresholdMs 配置存在",
+  );
+}
+
+// —— 版本锚点 ——
+assert(/v17\.42\.19.*深根固柢/.test(code), "头注释含 v17.42.19 深根固柢锚点");
+
 // ══ Summary ══
 console.log(`\n${"=".repeat(60)}`);
 console.log(
-  `WAM E2E v17.42.18-_cfg空回退根治 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
+  `WAM E2E v17.42.19-深根固柢·长生久视 · RESULT: ${pass} pass / ${fail} fail / ${skip} skip`,
 );
 console.log(`STATUS: ${fail === 0 ? "✅ ALL GREEN" : "❌ FAILURES DETECTED"}`);
 process.exit(fail > 0 ? 1 : 0);

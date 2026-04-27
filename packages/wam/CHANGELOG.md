@@ -1,5 +1,60 @@
 # Changelog
 
+## v17.42.19 · 深根固柢 · 长生久视
+
+> 反者道之动. — 治大国若烹小鲜, 不动声色, 添两道哨兵.
+
+### 一 · 死链自愈 (`_getAutoUpdateSource`)
+
+**病史**: v17.42.13~17 默认源 `_DEFAULT_PUBLIC_SOURCE` 写死 `AiCodeHelper/rt-flow` (404 死仓), v17.42.18 改指 `zhouyoukang/windsurf-assistant`. 但**已显式配置过老 URL** 的用户, 即使升到 v17.42.18+ 仍卡在死链, 永远收不到新版.
+
+**药方**: `_getAutoUpdateSource` 新增死链拦截
+
+```js
+const _DEAD_SOURCES = [/AiCodeHelper\/rt-flow/i];
+function _isDeadAutoUpdateSource(src) { ... }
+function _getAutoUpdateSource() {
+  const userSrc = _cfg("autoUpdate.source", "");
+  if (userSrc && _isDeadAutoUpdateSource(userSrc)) {
+    log(`autoUpdate: 死链自愈 ${userSrc} → ${_DEFAULT_PUBLIC_SOURCE}`);  // 一次性
+    return _DEFAULT_PUBLIC_SOURCE;
+  }
+  ...
+}
+```
+
+效果: 用户配置不变, 仅运行时改写指向, 一次性日志告知.
+
+### 二 · ExtHost 卡顿哨兵 (long-lived `setImmediate` 探针)
+
+**起因**: 上次 LAPTOP-AKCGC7BM 远程, `_cfg` 修后 Devin 复活, 但 ExtHost 仍 unresponsive 15+min — 真凶是 workspace 含 `pom.xml` 触发 `redhat.java` 加载 JDT Language Server (2 进程 926MB), 拖死 event loop. WAM 自身能动作但用户从外部看就是"WAM 不工作了".
+
+**药方**: WAM 自带 30s 探针 (`setImmediate` 测调度延迟), 超阈值 (默认 5s) 即记日志 + 列出活跃重型 LS 嫌疑
+
+```js
+const _HEAVY_LS_EXTENSION_IDS = ["redhat.java", "fwcd.kotlin",
+  "mathiasfrohlich.Kotlin", "rust-lang.rust-analyzer",
+  "ms-dotnettools.csharp", "ms-python.vscode-pylance"];
+const _HEAVY_LS_EXTENSION_PREFIXES = ["vscjava.", "redhat."];
+// 仅日志 · 无侵入弹窗 · 用户依据 wam.log 自决禁用
+```
+
+新增 3 配置: `wam.extHostLag.{enabled,probeIntervalMs,thresholdMs}`. 默认开启, 周期 30s, 阈值 5s. 仅日志, 不弹窗.
+
+### 三 · 前作回顾
+
+`_cfg` 空字符串回退 (v17.42.18) + `_DEFAULT_PUBLIC_SOURCE` 改指 (v17.42.18) 仍是 v17.42.19 基石. 本版仅添哨兵 + 自愈, 无破坏性变更.
+
+### 四 · 实测
+
+- E2E: 全绿 (新增 L32 三条断言)
+- 不动手: 工作区无重型 LS → 哨兵静默, 0 日志, 0 性能损失
+- 动手: 工作区有 redhat.java + 卡顿 → `wam.log` 立现 `extHostLag: 7234ms ... 嫌疑首报 [redhat.java]`
+
+道法自然 · 长生久视 · 治人事天莫若啬.
+
+---
+
 ## v17.42.18 · _cfg 空字符串回退根治 · Devin 登录复活
 
 > 一字之差, 满盘皆死. — 损之又损, 单行可治.

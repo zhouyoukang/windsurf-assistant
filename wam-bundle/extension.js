@@ -565,7 +565,8 @@ let RELOAD_SIGNAL = path.join(WAM_DIR, "_reload_signal");
 let RELOAD_READY = path.join(WAM_DIR, "_reload_ready");
 // TRIAL_MAX_DAYS已移除 — 官方Trial是14天(非90天), 且过期后仍有配额, 不再用时间猜测过期
 // PURGE_INTERVAL_MS → _getPurgeIntervalMs() (v17.1 getter化)
-const WAM_VERSION = "17.42.18"; // v17.42.18: _cfg 空字符串回退根治 — package.json string default:"" 与代码 default 真值并存时, vscode.get 返回 ""・原 _cfg 返回空字符串 → new URL("") 抛 Invalid URL → Devin/Firebase 登录全死. 修: val==="" 且 default 非空字符串时回退到代码 default
+const WAM_VERSION = "17.42.19"; // v17.42.19: 深根固柢·长生久视 — (1) 死链自愈 _getAutoUpdateSource 检测 AiCodeHelper/rt-flow 旧默认 → 静默改写 zhouyoukang/windsurf-assistant; (2) ExtHost 卡顿哨兵 30s 探针 + setImmediate 测延迟 + 重型 LS (redhat.java/vscjava/kotlin/rust-analyzer) 嫌疑日志, 无侵入仅记录, 帮用户定位上次 LAPTOP-AKCGC7BM 类崩溃
+// v17.42.18: _cfg 空字符串回退根治 — package.json string default:"" 与代码 default 真值并存时, vscode.get 返回 ""・原 _cfg 返回空字符串 → new URL("") 抛 Invalid URL → Devin/Firebase 登录全死. 修: val==="" 且 default 非空字符串时回退到代码 default
 // v17.42.17: 重新锚定本源 — 一对话一会话·多对话并行 (TurnTracker: msgAnchor 起点 → 配额 stable / maxMs 兜底 终结)
 // 历史锚点: v17.42.15: 载营魄抱一 — 存储本源五重机制 (L1原子写+L2内容感知备份+L3灾难回退+L4文件锁+L5journal+NULL-WIPE护本)
 // 根因: ~/.wam-hot 单路径刚则断 · _detectProductName 首词为空即退 Windsurf · activate 无try/catch
@@ -1564,8 +1565,29 @@ function _getAutoUpdateAutoDiscover() {
 // v17.42.18 死链复活: AiCodeHelper/rt-flow 不存在 (404) · 改指 zhouyoukang/windsurf-assistant 主仓 wam-bundle/
 const _DEFAULT_PUBLIC_SOURCE =
   "https://cdn.jsdelivr.net/gh/zhouyoukang/windsurf-assistant@main/wam-bundle/";
+// v17.42.19 死链自愈: 已知废弃仓库列表 · 命中即静默改写为新主仓
+//   动机: v17.42.13~17 用户配置 wam.autoUpdate.source 含 AiCodeHelper/rt-flow (旧默认或显式)
+//         若不自愈, 永远 update 不到新版 · 形成"僵尸用户"
+const _DEAD_SOURCES = [/AiCodeHelper\/rt-flow/i];
+let _autoUpdateMigrationLogged = false;
+function _isDeadAutoUpdateSource(src) {
+  if (!src || typeof src !== "string") return false;
+  return _DEAD_SOURCES.some((re) => re.test(src));
+}
 function _getAutoUpdateSource() {
   const userSrc = _cfg("autoUpdate.source", ""); // SMB 路径 或 HTTPS URL
+  // v17.42.19 死链自愈: userSrc 含已知废弃仓库 → 改指主仓 · 一次性日志告警
+  if (userSrc && _isDeadAutoUpdateSource(userSrc)) {
+    if (!_autoUpdateMigrationLogged) {
+      _autoUpdateMigrationLogged = true;
+      try {
+        log(
+          `autoUpdate: 死链自愈 ${userSrc} → ${_DEFAULT_PUBLIC_SOURCE} (AiCodeHelper/rt-flow 已废弃, 自动改指主仓 wam-bundle)`,
+        );
+      } catch {}
+    }
+    return _DEFAULT_PUBLIC_SOURCE;
+  }
   if (userSrc) return userSrc;
   // v17.17 道法自然: 用户未配置时·若 autoDiscover=true 则默认用公网 jsDelivr (fallback 链自动选通的镜像)
   if (_getAutoUpdateAutoDiscover()) return _DEFAULT_PUBLIC_SOURCE;
@@ -7831,6 +7853,97 @@ async function _autoUpdateCheck(manual = false) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// v17.42.19 · ExtHost 卡顿哨兵 · 长生久视
+// ────────────────────────────────────────────────────────────────────────
+// 反者道之动: WAM 不能直接禁其它扩展, 但可探测 event loop 阻塞
+//   - 周期 (默认 30s) setImmediate 探针 · 测 event-loop 调度延迟
+//   - 阈值 (默认 5s) 超过则记日志 + 列出活跃重型 LS 扩展嫌疑
+//   - 重型 LS 名单: redhat.java/vscjava.*/kotlin/rust-analyzer/csharp
+//   - 仅日志 · 无侵入弹窗 · 用户从 wam.log 即可定位上次类 LAPTOP-AKCGC7BM 卡死的元凶
+//   - 治: 道·有道者不处 · 用户依据日志自决禁用对应扩展即可
+// ════════════════════════════════════════════════════════════════════════
+const _HEAVY_LS_EXTENSION_IDS = [
+  "redhat.java",
+  "fwcd.kotlin",
+  "mathiasfrohlich.Kotlin",
+  "rust-lang.rust-analyzer",
+  "ms-dotnettools.csharp",
+  "ms-python.vscode-pylance", // 间接 LSP · 大型 Python 项目可能导致卡顿
+];
+const _HEAVY_LS_EXTENSION_PREFIXES = ["vscjava.", "redhat."];
+let _extHostLagTimer = null;
+let _extHostLagWarnedLs = new Set(); // 已告警过的扩展 ID 集合 · 一次性
+function _detectHeavyLsActive() {
+  try {
+    const all = (vscode.extensions && vscode.extensions.all) || [];
+    const culprits = [];
+    for (const e of all) {
+      if (!e || !e.isActive) continue;
+      const id = String(e.id || "");
+      if (_HEAVY_LS_EXTENSION_IDS.includes(id)) {
+        culprits.push(id);
+      } else if (
+        _HEAVY_LS_EXTENSION_PREFIXES.some(
+          (p) => id.toLowerCase().indexOf(p.toLowerCase()) === 0,
+        )
+      ) {
+        culprits.push(id);
+      }
+    }
+    return culprits;
+  } catch {
+    return [];
+  }
+}
+function _getExtHostLagProbeMs() {
+  return Math.max(10000, _cfg("extHostLag.probeIntervalMs", 30000));
+}
+function _getExtHostLagThresholdMs() {
+  return Math.max(1000, _cfg("extHostLag.thresholdMs", 5000));
+}
+function _getExtHostLagEnabled() {
+  return _cfg("extHostLag.enabled", true);
+}
+function _scheduleExtHostLagProbe() {
+  if (_extHostLagTimer) return;
+  _extHostLagTimer = setTimeout(() => {
+    _extHostLagTimer = null;
+    if (!_getExtHostLagEnabled()) return;
+    const t0 = Date.now();
+    setImmediate(() => {
+      const lag = Date.now() - t0;
+      const threshold = _getExtHostLagThresholdMs();
+      if (lag > threshold) {
+        const culprits = _detectHeavyLsActive();
+        try {
+          log(
+            `extHostLag: ${lag}ms (>${threshold}ms 阈值) · 重型 LS 嫌疑: [${culprits.join(", ") || "无 (其它扩展)"}]`,
+          );
+        } catch {}
+        // 一次性告警每个新嫌疑 (避免日志洪水)
+        for (const c of culprits) {
+          if (!_extHostLagWarnedLs.has(c)) {
+            _extHostLagWarnedLs.add(c);
+            try {
+              log(
+                `extHostLag: 嫌疑首报 [${c}] · 若非该语言项目 · 可考虑在 .windsurf/extensions 重命名 ${c}* 目录加 .disabled 后缀禁用`,
+              );
+            } catch {}
+          }
+        }
+      }
+      _scheduleExtHostLagProbe(); // 续航
+    });
+  }, _getExtHostLagProbeMs());
+}
+function _stopExtHostLagProbe() {
+  if (_extHostLagTimer) {
+    clearTimeout(_extHostLagTimer);
+    _extHostLagTimer = null;
+  }
+}
+
 function _startAutoUpdate() {
   _stopAutoUpdate();
   if (!_getAutoUpdateEnabled()) return;
@@ -8154,6 +8267,8 @@ function _ensureEngines() {
   _startActiveTokenGuardian();
   // v17.10 太上·不知有之: 自动更新 (默认启用·无 source 时 no-op)
   _startAutoUpdate();
+  // v17.42.19 长生久视: ExtHost 卡顿哨兵 · 探测 event-loop 阻塞 · 重型 LS 嫌疑日志
+  _scheduleExtHostLagProbe();
   // v17.12 太上·不知有之: UI 按钮完全内化 (用户无感·后台自运行)
   _startAutoVerify(); // 每 6h 自动验证清理 (原 wam.verifyAll 按钮)
   _startAutoExpiry(); // 每 12h 自动刷新有效期 (原 wam.scanExpiry 按钮)
@@ -8169,6 +8284,7 @@ function _stopEngines() {
   _stopTokenPool(); // v12
   _stopActiveTokenGuardian(); // v17.42.5
   _stopAutoUpdate(); // v17.10
+  _stopExtHostLagProbe(); // v17.42.19 ExtHost 卡顿哨兵
   _stopAutoVerify(); // v17.12
   _stopAutoExpiry(); // v17.12
   _stopTurnTicker(); // v17.42.17 重新锚定本源
