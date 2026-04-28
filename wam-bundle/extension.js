@@ -48,7 +48,14 @@ let _output = null,
   _predictiveCandidate = -1, // 预判候选 idx (本源 v8 · 额度低时提前选好下一号)
   _lastInjectFail = 0, // 上次注入失败时间 (rate-limit 拦截冷却)
   _lastDocChangeAt = 0, // 最近文档变化时间 (Cascade 流式避让 · 对齐本源 v17.42.5)
-  _lastSwitchMs = 0; // 上次切号耗时ms (对齐本源 switchToAccount.ms)
+  _lastSwitchMs = 0, // 上次切号耗时ms (对齐本源 switchToAccount.ms)
+  // v2.1.1 消息锚定: 额度变化检测 + 爆发模式 (对齐本源 v17.42.20 monitorActiveQuota)
+  _prevTickDaily = -1,
+  _prevTickWeekly = -1,
+  _prevTickEmail = "",
+  _burstUntil = 0, // 爆发模式截止时间 (检测到额度变化后 5min 快速轮询)
+  _burstTimer = null, // 爆发模式定时器
+  _consecutiveChanges = 0; // 连续变化计数
 function log(m) {
   const t = new Date().toISOString().substring(11, 23);
   if (_output) _output.appendLine("[" + t + "] " + m);
@@ -2155,9 +2162,16 @@ class Engine {
       clearInterval(this.scanTimer);
       this.scanTimer = null;
     }
+    if (_burstTimer) {
+      clearInterval(_burstTimer);
+      _burstTimer = null;
+    }
   }
 
-  // ── v2.1 _tick: 耗尽保护 · 预判候选 · 切号冷却 · 重试3次 · 重置等待 ──
+  // ── v2.1.1 _tick: 消息锚定 + 耗尽保护 + 预判 + 爆发模式 (对齐本源 v17.42.20) ──
+  // 核心: 仅监测活跃账号 (tryFetchPlanStatus · 无需重新登录 · 最小网络开销)
+  // 消息锚定: 额度波动 = 有人在用此号 → 立即切走 (反者道之动)
+  // 爆发模式: 检测到变化后 5min 内每 5s 轮询 (快速感知 · 精准切号)
   async _tick() {
     this.lastScanAt = Date.now();
     if (!_cfg("autoRotate", true)) return;
@@ -2193,6 +2207,81 @@ class Engine {
     const effQuota = drought ? q.daily : Math.min(q.daily, q.weekly);
     const hrsToDaily = hoursUntilDailyReset();
     const hrsToWeekly = hoursUntilWeeklyReset();
+    const curEmail = this.store.activeEmail.toLowerCase();
+
+    // ── 消息锚定: 额度变化检测 (对齐本源 monitorActiveQuota v17.42.20) ──
+    // 波动 = 有人在用此账号 → 立即切到下一个 · 确保下条消息用新号
+    const changeThreshold = 0.5; // 额度变化 > 0.5% 视为波动
+    if (_prevTickEmail === curEmail && _prevTickDaily >= 0) {
+      const dDelta = _prevTickDaily - q.daily;
+      const wDelta = _prevTickWeekly - q.weekly;
+      const hasFluctuation =
+        dDelta > changeThreshold || wDelta > changeThreshold;
+      if (hasFluctuation) {
+        _consecutiveChanges++;
+        // 进入爆发模式: 5min 内快速轮询
+        _burstUntil = Date.now() + 5 * 60 * 1000;
+        this._ensureBurstMode();
+        log(
+          "📊 消息锚定: D" +
+            _prevTickDaily +
+            "→" +
+            q.daily +
+            "(Δ" +
+            dDelta.toFixed(1) +
+            ") W" +
+            _prevTickWeekly +
+            "→" +
+            q.weekly +
+            "(Δ" +
+            wDelta.toFixed(1) +
+            ") " +
+            curEmail.substring(0, 25) +
+            " [×" +
+            _consecutiveChanges +
+            "]",
+        );
+        // 波动 → 立即切号 (如果不在冷却中)
+        const switchCooldown = Date.now() - _lastSwitchTime < switchCooldownMs;
+        const injectCd = Date.now() - _lastInjectFail < 30000;
+        if (
+          !acc.skipAutoSwitch &&
+          !_switching &&
+          !switchCooldown &&
+          !injectCd
+        ) {
+          let bestI = _isValidAutoTarget(_predictiveCandidate)
+            ? _predictiveCandidate
+            : this.store.getBestIndex(activeI);
+          if (bestI >= 0) {
+            log(
+              "⚡ 消息锚定切号: D" +
+                q.daily +
+                "%·W" +
+                q.weekly +
+                "% → " +
+                this.store.accounts[bestI].email.substring(0, 20) +
+                (_predictiveCandidate >= 0 ? " [预判]" : ""),
+            );
+            // 更新 prev 防止切号后旧快照误触发
+            _prevTickDaily = -1;
+            _prevTickWeekly = -1;
+            _prevTickEmail = "";
+            _consecutiveChanges = 0;
+            await this._doAutoSwitch(bestI, activeI, "anchor");
+            return;
+          } else {
+            log("消息锚定: 波动检测但无可用账号, 继续使用当前号");
+          }
+        }
+      } else {
+        _consecutiveChanges = 0;
+      }
+    }
+    // 更新前一次快照
+    _prevTickDaily = q.daily;
+    _prevTickWeekly = q.weekly;
+    _prevTickEmail = curEmail;
 
     // ── 预判候选: 额度 < predictiveThreshold% 时提前预选 ──
     if (effQuota < predictiveThreshold && _predictiveCandidate < 0) {
@@ -2244,7 +2333,6 @@ class Engine {
         : q.weekly < threshold
           ? "Weekly耗尽(" + q.weekly + "%)"
           : "Daily耗尽(" + q.daily + "%)";
-      // v17.42.7 锁🔒贯通: 统一由 _isValidAutoTarget 四辨
       let bestI = _isValidAutoTarget(_predictiveCandidate)
         ? _predictiveCandidate
         : this.store.getBestIndex(activeI);
@@ -2283,6 +2371,26 @@ class Engine {
         log("tick: D" + q.daily + "% W" + q.weekly + "% ok");
       }
     }
+  }
+
+  // ── 爆发模式: 检测到额度变化后 5min 内每 5s 快速轮询 · 精准感知使用中状态 ──
+  // 道法自然: 正常时 60s 慢轮询 · 波动时 5s 快轮询 · 动静自如
+  _ensureBurstMode() {
+    if (_burstTimer) return; // 已在爆发中
+    const burstMs = 5000;
+    log(
+      "🔥 爆发模式: 5s轮询 · 持续至 " +
+        new Date(_burstUntil).toISOString().substring(11, 19),
+    );
+    _burstTimer = setInterval(() => {
+      if (Date.now() > _burstUntil || _wamMode !== "wam") {
+        clearInterval(_burstTimer);
+        _burstTimer = null;
+        log("🔥 爆发模式: 结束");
+        return;
+      }
+      this._tick().catch((e) => log("burst-tick err: " + (e.message || e)));
+    }, burstMs);
   }
 
   // ── 自动切号核心 (含 3 次重试 · 流式避让 · 对齐本源 v17.42.20) ──
