@@ -548,8 +548,9 @@ async function runTests() {
     fs.readFileSync(path.join(__dirname, "package.json"), "utf8"),
   );
   await t(
-    "name=wam-min",
+    "name=rt-flow",
     () =>
+      pkg.name === "rt-flow" ||
       pkg.name === "wam-min" ||
       (() => {
         throw new Error("name=" + pkg.name);
