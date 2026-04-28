@@ -1,59 +1,76 @@
-# Windsurf Assistant · Monorepo
+# Windsurf Assistant
 
-> 道生一, 一生二, 二生三, 三生万物.
+> 水善利万物而不争，处众人之所恶，故几于道。
 
-一个仓, 两个插件 — 同源异用.
+Windsurf multi-account management — auto-rotate, quota-aware, zero-config.
 
 ## Packages
 
-| 子项 | 路径 | 职责 | 状态 |
-|------|------|------|------|
-| **WAM** | [`packages/wam/`](packages/wam/) | 纯无感切号 · 百号轮转 · 消息锚定 · 零中继直连 | ✅ v17.42.18 (独立发布 · 含 _cfg 根治) |
-| **WAM-Proxy** | [`packages/wam-proxy/`](packages/wam-proxy/) | WAM + 反代 · 道德经 SP 注入 · 绝侧信道 | 📦 v17.58.0 · 历史冻结归档 (活跃开发已迁 `020-道VSIX_DaoAgi/dao-agi/`) |
+| Package | Path | Description | Status |
+|---------|------|-------------|--------|
+| **WAM** | [`packages/wam/`](packages/wam/) | Full edition · message anchoring · token pool · proxy scan · Firebase + Devin | v17.42.20 |
+| **WAM Min** | [`packages/wam-min/`](packages/wam-min/) | Minimal edition · ~106KB single file · Devin-only · clean UI | **v2.1.0** ✅ |
+| **WAM-Proxy** | [`packages/wam-proxy/`](packages/wam-proxy/) | WAM + reverse proxy · archived | v17.58.0 🧊 |
 
-## WAM (packages/wam)
+## WAM Min (packages/wam-min) — Recommended
 
-纯切号插件. 无外部依赖, 单文件 `extension.js`.
+The minimal edition. One file, zero dependencies, works everywhere.
 
-- **四级容错 activate**: 产品名/数据目录/存储路径/日志 逐段 try/catch
-- **六级 WAM_DIR 兜底**: env → config → legacy → 用户隔离 → globalStorage → tmpdir
-- **消息锚定**: 五路探针, 对话发送即切号
-- **双身份**: Firebase + Devin 自动探测
-- **零硬编码**: 路径/端口/端点/模型全 `wam.*` 可配
+### Features
+- **Auto-rotate** — quota drops below threshold → switch to best account
+- **Predictive pre-warming** — pre-select next candidate before exhaustion
+- **Time rotation** — optional `rotatePeriodMs` for stealth periodic switching
+- **Drought mode** — all weekly quotas exhausted → daily-only fallback
+- **Claude gate** — detect Claude model availability per account
+- **3-path injection** — IDE internal API → clipboard → hijack (failover)
+- **Webview panel** — sidebar + editor panel, live quota bars
+- **Batch verify** — parallel account verification
+- **Invisible mode** — `wam.invisible: true` for zero-UI stealth operation
 
-## WAM-Proxy (packages/wam-proxy)
+### Quick Start
 
-WAM 切号 + 反代注入道德经. v17.58.0 历史冻结归档.
+1. Put accounts in `~/.wam/accounts.md`:
+   ```
+   user@example.com password123
+   user2@shop.com----password456
+   ```
+2. Install the `.vsix` or copy to extensions directory
+3. Done — it activates on startup, no interaction needed
 
-活跃开发版本已迁移至姊妹目录 `020-道VSIX_DaoAgi/dao-agi/` (当前 v17.61.1).
-本目录作为源代码演化快照保留, `vendor/wam/{extension.js,package.json}` 符号链回 `packages/wam/`, 改一处万物响应.
+### Testing
 
-- **三路径齐断**: plain UTF-8 / nested ChatMessage / raw_sp
-- **16 侧信道标记**: 全部识别并置换
-- **vendor 内嵌 WAM core**: 零依赖独立运行 (via symlink)
-
-## 共享基建
-
-```text
-scripts/
-  deploy.js        # 141/179 双端部署
-  build-vsix.js    # VSIX 打包
-.github/
-  workflows/
-    ci.yml         # E2E 自动验证
+```bash
+cd packages/wam-min
+node _test_harness.cjs           # offline tests (24 cases)
+node _test_harness.cjs --devin   # live pipeline test
 ```
 
-## 姊妹仓
+## WAM Full (packages/wam)
 
-| 仓 | 位 | 职 |
+The full edition with advanced features:
+
+- **Message anchoring** — 5-probe detection (network/command/file) → switch on chat send
+- **Token pool** — burst/cruise pre-warming cycle
+- **Proxy scanning** — port scan + relay gateway
+- **Firebase + Devin** — dual auth with multi-key failover
+- **Auto-update** — jsDelivr / SMB source
+- **ExtHost sentinel** — event-loop lag detection
+- **Instance coordination** — heartbeat + claims across windows
+
+## Configuration
+
+All settings under `wam.*` in VSCode settings. Both editions share the same namespace.
+
+| Setting | Default | Description |
 |---|---|---|
-| [`zhouyoukang/AGI`](https://github.com/zhouyoukang/AGI) | 一 (本源) | 道德经 81 章 · 道德经.md 文本本体 |
-| [`zhouyoukang/windsurf-assistant`](https://github.com/zhouyoukang/windsurf-assistant) | 二 (用) | WAM 切号 + 道Agent 注入 |
+| `wam.autoRotate` | `true` | Enable auto-switching |
+| `wam.invisible` | `false` | Stealth mode |
+| `wam.autoSwitchThreshold` | `5` | Switch threshold (%) |
+| `wam.rotatePeriodMs` | `0` | Time rotation (ms, 0=off) |
+| `wam.accountsFile` | `""` | Account file (auto-detect) |
+
+See each package's README for full configuration reference.
 
 ## License
 
-MIT.
-
----
-
-> 道冲, 而用之或不盈. 渊兮, 似万物之宗.
+MIT
