@@ -1,0 +1,147 @@
+{
+  "name": "wam-min",
+  "displayName": "WAM Min",
+  "description": "Windsurf account manager · minimal edition · auto-rotate multi-account pool",
+  "version": "2.1.0",
+  "publisher": "devaid",
+  "repository": { "type": "git", "url": "https://github.com/zhouyoukang/windsurf-assistant.git", "directory": "packages/wam-min" },
+  "homepage": "https://github.com/zhouyoukang/windsurf-assistant",
+  "bugs": { "url": "https://github.com/zhouyoukang/windsurf-assistant/issues" },
+  "keywords": ["windsurf", "account", "rotation", "management", "pool"],
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wam-container",
+          "title": "WAM",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "wam-container": [
+        {
+          "id": "wam.panel",
+          "name": "Manager",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "wam.openEditor",       "title": "WAM: Open Panel",            "category": "WAM" },
+      { "command": "wam.status",           "title": "WAM: Status",                "category": "WAM" },
+      { "command": "wam.switchAccount",    "title": "WAM: Switch Account",        "category": "WAM" },
+      { "command": "wam.panicSwitch",      "title": "WAM: Emergency Switch",      "category": "WAM" },
+      { "command": "wam.refreshAll",       "title": "WAM: Refresh All",           "category": "WAM" },
+      { "command": "wam.addAccount",       "title": "WAM: Add Account",           "category": "WAM" },
+      { "command": "wam.injectToken",      "title": "WAM: Inject Token",          "category": "WAM" },
+      { "command": "wam.verifyAll",        "title": "WAM: Verify & Clean",        "category": "WAM" },
+      { "command": "wam.scanExpiry",       "title": "WAM: Scan Expiry",           "category": "WAM" },
+      { "command": "wam.healthCheck",      "title": "WAM: Health Check",          "category": "WAM" },
+      { "command": "wam.clearBlacklist",   "title": "WAM: Clear Blacklist",       "category": "WAM" },
+      { "command": "wam.toggleAutoRotate", "title": "WAM: Toggle Auto-Rotate",    "category": "WAM" },
+      { "command": "wam.show",             "title": "WAM: Show Output Log",       "category": "WAM" },
+      { "command": "wam.selfTest",         "title": "WAM: Self-Test",             "category": "WAM" },
+      { "command": "wam.testDevinSwitch",  "title": "WAM: Test Devin Pipeline",   "category": "WAM" },
+      { "command": "wam.setModeWam",       "title": "WAM: WAM Mode",              "category": "WAM" },
+      { "command": "wam.setModeOfficial",  "title": "WAM: Official Login Mode",   "category": "WAM" }
+    ],
+    "configuration": {
+      "title": "WAM Min",
+      "properties": {
+        "wam.accountsFile": {
+          "type": "string",
+          "default": "",
+          "description": "Account pool file path (empty = auto-detect ~/.wam/accounts.md)"
+        },
+        "wam.autoRotate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-switch to next available account when quota drops below threshold"
+        },
+        "wam.autoSwitchThreshold": {
+          "type": "number",
+          "default": 5,
+          "description": "Auto-switch threshold (%) — triggers when daily or weekly drops below"
+        },
+        "wam.scanIntervalMs": {
+          "type": "number",
+          "default": 60000,
+          "description": "Active account quota scan interval (ms, min 30s)"
+        },
+        "wam.preferYi": {
+          "type": "boolean",
+          "default": false,
+          "description": "Force clipboard injection path (debug)"
+        },
+        "wam.notifyLevel": {
+          "type": "string",
+          "enum": ["silent", "notify", "verbose"],
+          "default": "notify",
+          "description": "Notification level: silent=no toast, notify=switch results, verbose=all"
+        },
+        "wam.startupDelayMs": {
+          "type": "number",
+          "default": 3500,
+          "description": "Delay before first auto-login after startup (ms)"
+        },
+        "wam.invisible": {
+          "type": "boolean",
+          "default": false,
+          "description": "Invisible mode — minimal status bar + zero toast"
+        },
+        "wam.rotatePeriodMs": {
+          "type": "number",
+          "default": 0,
+          "description": "Time-based rotation period (ms, 0=disabled). Suggest 10800000 (3h) or 21600000 (6h)"
+        },
+        "wam.verify.parallel": {
+          "type": "number",
+          "default": 3,
+          "description": "verifyAll parallelism (1-8, default 3)"
+        },
+        "wam.verify.gapMs": {
+          "type": "number",
+          "default": 250,
+          "description": "Gap between verify completions (ms, 0=none)"
+        },
+        "wam.verify.staleMin": {
+          "type": "number",
+          "default": 30,
+          "description": "Skip accounts verified within this many minutes during stale refresh"
+        },
+        "wam.autoVerifyOnStartupMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "Auto verify stale accounts N ms after startup (0=disabled)"
+        },
+        "wam.autoVerifyPeriodMs": {
+          "type": "number",
+          "default": 1800000,
+          "description": "Periodic stale account verification interval (ms, default 30min, 0=disabled)"
+        },
+        "wam.predictiveThreshold": {
+          "type": "number",
+          "default": 25,
+          "description": "Pre-select next candidate when quota drops below this %"
+        },
+        "wam.switchCooldownMs": {
+          "type": "number",
+          "default": 15000,
+          "description": "Minimum interval between auto-switches (ms, prevents storm)"
+        },
+        "wam.waitResetHours": {
+          "type": "number",
+          "default": 3,
+          "description": "When reset is within N hours, wait instead of switching"
+        }
+      }
+    }
+  }
+}
