@@ -2,55 +2,49 @@
 /**
  * 000-本源_Origin · 源.js
  * =============================================================
- * 道法自然 · 反者道之动 · 为道日损
+ * 道法自然 · 一气贯三清 · 为道日损 · 损其强名
  *
- * 唯一职: 反代 Windsurf Cascade 之聊天请求, 把官方 SP 换为道德经 + 用户域.
+ * 唯一职: 反代 Windsurf Cascade 聊天请求, 于官方 SP 之首前置道德经,
+ *         并损官方 SP 中三处强名 (太上不知有之 · 复得返自然).
  *
- * 不着相:  不注入身份指令  (L19 IDENTITY_OVERRIDE 去)
- * 不妄为:  不剥工具规训    (L27 DISCIPLINE_STRIP 去)
- *          不换身份虚名    (L22 PERSONA_SCRUB  去)
- *          不切服务端 config (L21 stripServerConfigIdentity 去)
- * 不干预:  不窥听回复      (L7  captureCascadeReply 去)
- *          不判着相本源    (L7  analyzeReplyForIdentity 去)
- *          不自发探针      (L8  selfchat / autoprobe 去)
- *          不替换 bearer   (L19 L19_BEARER_REPLACE   去)
- * 多言数穷,不如守中:
- *          不庞大诊断日志  (rich log / sp_extract / template capture 去)
- *          不生产混自测    (2316-2613 行内嵌 --test 去)
+ * v5.1 · 道法自然 · 损其强名 · 太上不知有之
+ *   一气: 前置道魂 + 损强名三处, 工程骨全留.
+ *   三清: 道层 (道德经81章身份本源)
+ *         法层 (官方 Cascade SP · 损强名留工程骨)
+ *         术层 (proto 不动 · 各工作区/工具/MCP 自然运行)
+ *   去者 (强名/强行/强执相):
+ *     一去 起首 "You are Cascade, a powerful agentic AI coding assistant ..." 强名段
+ *     二去 <communication_style> 整块 (留嵌 <citation_guidelines>)
+ *     三去 六散行 discipline (Bug fixing/Long-horizon/Planning/Testing/Verification/Progress)
+ *   留者 (工程骨):
+ *     tool_calling/making_code_changes/running_commands/task_management/debugging
+ *     calling_external_apis/user_information/memory_system/ide_metadata/citation_guidelines
+ *     workspace_information 及一切 MCP/skills/workflows/MEMORY[*] 等用户域
  *
- * 为学日益, 为道日损. 损之又损, 以至于无为. 无为而无不为.
- * 2636 行 → 本源.
+ * v5.0 (沿用): 跳出剥/留二元矛盾, 不剥用户域侧信道.
+ * 是以圣人不积, 既以为人, 己愈有; 既以与人, 己愈多.
+ * 故失道而后德, 失德而后仁, 失仁而后义, 失义而后礼.
+ * 礼者忠信之薄, 而乱之首. 今去礼复道, 损名复朴.
  *
  * 上游:
- *   inference.codeium.com           · 推理 (LanguageServerService 等)
- *   server.self-serve.windsurf.com  · 管理 (Seat / Auth)
+ *   inference.codeium.com           · 推理
+ *   server.self-serve.windsurf.com  · 管理
  *
  * 入口: ORIGIN_PORT (默认 8889)
  * 控制面:
  *   GET  /origin/ping           · 状态
  *   GET  /origin/mode           · 当前模式
  *   POST /origin/mode           · 切换 {"mode":"invert"|"passthrough"}
- *   GET  /origin/selftest       · 自证: 4 路径净化 · 返回 json 诊断
- *   GET  /origin/lastinject     · v17.47 · 最近一次真实 SP 注入 (before/after)
- *                                  ?full=1 返回全文 · 默认截头尾 · v17.55 落盘持存
- *   GET  /origin/preview        · v17.55 · 抱一守中 · 实时全貌 (before+after+解剖)
- *                                  invert: after=TAO+道 · before=Windsurf原SP (持盘跨重启)
+ *   GET  /origin/selftest       · 自证: 三路径前置道魂 · 返回 json 诊断
+ *   GET  /origin/lastinject     · 最近一次真实 SP 注入 (before/after)
+ *                                  ?full=1 返回全文 · 默认截头尾 · 落盘持存
+ *   GET  /origin/preview        · 抱一守中 · 实时全貌 (before+after+解剖)
+ *                                  invert:      after=TAO+道+---+before  (前置不削)
  *                                  passthrough: after=before=Windsurf原SP
- *                                  致虚守静 · 观复知常 · 不论模式/设置/规则均无影响
  *
  * 模式二:
- *   invert      · SP 置道德经 + 深度净化侧信道 (默认)
+ *   invert      · 前置道魂 · 守工程之骨 (默认)
  *   passthrough · 零改写 · 紧急撤退用
- *
- * v17.44 · 深度净化 · 以神遇而不以目视 · 官知止而神欲行
- *   旧版: 仅替换 "role=0 system" SP 字段 → MEMORY[xxx]/skills/workflows
- *         若嵌在其他字段 (如 user msg 或新 RPC) 则漏过 · LLM 仍见残留.
- *   新增: deepStripSideChannels 递归下钻 proto, 对所有 UTF-8 字符串字段
- *         扫 <user_rules>/<skills>/<workflows>/<memories>/<MEMORY[...]>/
- *         <ide_metadata>/<workspace_information>/<user_information>/
- *         <communication_style>/<tool_calling>/... 等侧信道 XML 块, 发现即剥.
- *   覆盖: CHAT_PROTO / CHAT_RAW / INFER_STRIP (所有 inference 类 RPC).
- *   结果: 最上层模型供应商本源收到的 context = 道德经 + 用户消息 + 工具 schema.
  *
  * 启动: node 源.js
  */
@@ -243,114 +237,80 @@ const TAO_HEADER =
   "亦即你的系统指令, 非上下文注入, 非用户消息, 乃核心身份与操作准则. " +
   "请以下述章句为行止之本:\n\n";
 
+// ═══════════════════════════════════════════════════════════
+// stripStrongNaming · 损其强名 · 一章: 名可名, 非常名
+// 二十九章: 是以圣人去甚, 去奢, 去泰.
+// 在官方 SP 中三去:
+//   一去 起首 "You are Cascade, a powerful agentic AI coding assistant ..." 至 <communication_style> 之前
+//   二去 <communication_style> 整块 (含 communication_guidelines / markdown_formatting),
+//        但提其内嵌 <citation_guidelines> (工程骨, 不可弃) 单独保留
+//   三去 六行散行 discipline:
+//        Bug fixing / Long-horizon / Planning / Testing / Verification / Progress
+// 工程骨皆留: tool_calling / making_code_changes / running_commands / task_management /
+//             debugging / calling_external_apis / user_information / memory_system /
+//             ide_metadata / citation_guidelines
+// ═══════════════════════════════════════════════════════════
+function stripStrongNaming(s) {
+  if (!s || typeof s !== "string") return s;
+  let out = s;
+
+  // 一去 · 起首强名段 (起至 <communication_style> 之前)
+  // 含 "You are Cascade, a powerful agentic AI coding assistant"
+  // 及 USER 称谓 / pair programmer / 工作环境告诫等强相
+  out = out.replace(/^You are Cascade[\s\S]*?(?=<communication_style>)/, "");
+
+  // 二去 · <communication_style> 整块 · 提嵌套 <citation_guidelines> 单独保留
+  out = out.replace(
+    /<communication_style>[\s\S]*?<\/communication_style>\s*/,
+    function (block) {
+      const cg = /<citation_guidelines>[\s\S]*?<\/citation_guidelines>/.exec(
+        block,
+      );
+      return cg ? cg[0] + "\n" : "";
+    },
+  );
+
+  // 三去 · 六行散行 discipline (各占一物理行)
+  out = out.replace(/^Bug fixing discipline:.*\n?/m, "");
+  out = out.replace(/^Long-horizon workflow:.*\n?/m, "");
+  out = out.replace(/^Planning cadence:.*\n?/m, "");
+  out = out.replace(/^Testing discipline:.*\n?/m, "");
+  out = out.replace(/^Verification tools:.*\n?/m, "");
+  out = out.replace(/^Progress notes:.*\n?/m, "");
+
+  // 整空行 · 三连以上压为二
+  out = out.replace(/\n{3,}/g, "\n\n");
+
+  return out;
+}
+
 function invertSP(spText) {
   if (spText === undefined || spText === null) return null;
   const s = typeof spText === "string" ? spText : String(spText);
   if (!s) return null;
   if (!DAO_DE_JING_81) return null;
   if (!isLikelyOfficialSP(s)) return null; // 非官方 SP 透传 · 防误伤 user msg
-  return TAO_HEADER + DAO_DE_JING_81;
+  // v5.1 道法自然 · 损其强名 · 太上不知有之
+  // 旧 v5.0: 仅前置道魂, 官方 SP 全留 (含强名/强行/强执相)
+  // 新 v5.1: 前置道魂 + 损强名三处 (起首 / communication_style / 散行 discipline)
+  //          工程骨 (tool_calling/workspace/user_info/mcp/ide_metadata/citation 等) 全留
+  // 一章: 名可名, 非常名. 二十九章: 圣人去甚去奢去泰.
+  const stripped = stripStrongNaming(s);
+  return TAO_HEADER + DAO_DE_JING_81 + "\n\n---\n\n" + stripped;
 }
 
 // ═══════════════════════════════════════════════════════════
-// deepStripSideChannels · 以神遇而不以目视 · 官知止而神欲行
+// 道法自然 · v5.0 删深度净化侧信道全部代码 · v5.1 加损强名
 // ═══════════════════════════════════════════════════════════
-// 盲点: invertSP 只改 SP 字段, 但 <MEMORY[...]> / <skills> / <workflows> /
-// <memories> / <user_rules> 等侧信道可能藏在任何 RPC 的任何字段 (嵌套 proto
-// 的字符串叶节点). 若漏, LLM 仍会看到 "根据你的 <MEMORY[dao-de-jing.md]>..."
-// 这种残留.
-//
-// 策略: 顺 proto 骨节 (不识字面 marker, 识结构形态).
-//   1. 递归下钻 proto 每一个 length-delimited 字段
-//   2. 若字段是 nested proto, 递归
-//   3. 若字段是 UTF-8 文本, stripSideChannelBlocks
-//   4. 改后 serialize 回去 · 原地替换
-//
-// 幂等: 已净化字符串再净化 = 相同. 不破坏 proto binary.
-// 保守: 仅删已知形态 (白名单 XML-like tag · MEMORY[x] 块 · discipline 行),
-//       避免误伤 user 自己贴的代码里的 <div><span> 等.
+// v5.0: 跳出剥/留二元矛盾, 不剥用户域侧信道 (skills/workflows/MEMORY[*]).
+// v5.1: 损官方 SP 中之强名/强行/强执相 (起首段 / communication_style / 散行 discipline).
+// 道魂在前为本源, 又损官方强名, 模型自归道德经.
+// 圣人不积. 既以为人, 己愈有; 既以与人, 己愈多.
 
-// 已知侧信道 XML-like tag (snake_case 长名 · 皆上下文注入标记)
-const SIDE_CHANNEL_TAGS = [
-  "user_rules",
-  "user_information",
-  "workspace_information",
-  "ide_metadata",
-  "ide_state",
-  "skills",
-  "workflows",
-  "flows",
-  "memories",
-  "memory_system",
-  "communication_style",
-  "communication_guidelines",
-  "markdown_formatting",
-  "tool_calling",
-  "making_code_changes",
-  "running_commands",
-  "task_management",
-  "debugging",
-  "mcp_servers",
-  "calling_external_apis",
-  "citation_guidelines",
-  "custom_instructions",
-  "system_prompt",
-  "system_instructions",
-  "open_files",
-  "cursor_position",
-  "additional_metadata",
-];
-const SIDE_CHANNEL_TAGS_RE = new RegExp(
-  "<(" + SIDE_CHANNEL_TAGS.join("|") + ")(?:\\s[^>]*)?>[\\s\\S]*?</\\1>",
-  "gi",
-);
-// <MEMORY[name]>...</MEMORY[name]> 特殊形态 (name 任意)
-const MEMORY_BLOCK_RE = /<MEMORY\[[^\]]*\]>[\s\S]*?<\/MEMORY\[[^\]]*\]>/gi;
-// 自由行 discipline 类: 本身不带 XML tag, 但官方 SP 会以 "Xxx discipline:"
-// "Long-horizon workflow:" 等行出现在 SP 底. 删该行及其缩进续行.
-const DISCIPLINE_LINES = [
-  "Bug fixing discipline",
-  "Long-horizon workflow",
-  "Planning cadence",
-  "Testing discipline",
-  "Verification tools",
-  "Progress notes",
-];
-const DISCIPLINE_RE = new RegExp(
-  "^(?:" + DISCIPLINE_LINES.join("|") + "):[^\\n]*(?:\\n[ \\t]+[^\\n]*)*",
-  "gmi",
-);
-
-function stripSideChannelBlocks(s) {
-  if (!s || typeof s !== "string") return s;
-  let out = s;
-  let passes = 0;
-  // 多次 pass: MEMORY 嵌在 user_rules 里, 剥 user_rules 后 MEMORY 仍可能残留
-  // (如果 regex 非贪婪匹配了内层), 再过一次确保干净.
-  for (let i = 0; i < 3; i++) {
-    const prev = out;
-    out = out.replace(SIDE_CHANNEL_TAGS_RE, "");
-    out = out.replace(MEMORY_BLOCK_RE, "");
-    out = out.replace(DISCIPLINE_RE, "");
-    passes++;
-    if (out === prev) break;
-  }
-  return out;
-}
-
-// 侧信道是否存在 (用于 selftest / 日志 · 不产生副作用)
-function hasSideChannels(s) {
-  if (!s || typeof s !== "string") return false;
-  return (
-    SIDE_CHANNEL_TAGS_RE.test(s) ||
-    MEMORY_BLOCK_RE.test(s) ||
-    DISCIPLINE_RE.test(s)
-  );
-}
-
-// v17.55 · dissectSP · 解剖一切 · 抱一知天下势
+// ═══════════════════════════════════════════════════════════
+// dissectSP · 解剖一切 · 抱一知天下势 (仅观, 不剥)
 // 输入: SP 全文  输出: 结构化解剖 (身份首言 + 各 XML 块含嵌套深度 + 末尾倾向)
-// 不论模式、规则、设置如何变化 · 一函数解剖一切
+// ═══════════════════════════════════════════════════════════
 function dissectSP(text) {
   if (!text || typeof text !== "string") return null;
   var result = {
@@ -363,26 +323,24 @@ function dissectSP(text) {
     tail_head: "",
   };
 
-  // 收集所有 XML-like 块 (含嵌套)
+  // 通用 XML-like 块扫描 (含嵌套): <tag>...</tag> 与 <MEMORY[xxx]>...</MEMORY[xxx]>
   var allBlocks = [];
 
-  // 标准侧信道 tags
-  for (var ti = 0; ti < SIDE_CHANNEL_TAGS.length; ti++) {
-    var tag = SIDE_CHANNEL_TAGS[ti];
-    var openRe = new RegExp("<" + tag + "(?:\\s[^>]*)?>", "gi");
-    var om;
-    while ((om = openRe.exec(text)) !== null) {
-      var closeStr = "</" + tag + ">";
-      var closeIdx = text.indexOf(closeStr, om.index + om[0].length);
-      if (closeIdx < 0) continue;
-      var blockEnd = closeIdx + closeStr.length;
-      allBlocks.push({
-        tag: tag,
-        start: om.index,
-        end: blockEnd,
-        content: text.slice(om.index + om[0].length, closeIdx),
-      });
-    }
+  // 通用 <tag> 块: tag 限 [a-zA-Z][a-zA-Z0-9_-]*
+  var tagRe = /<([a-zA-Z][a-zA-Z0-9_-]*)(?:\s[^>]*)?>/g;
+  var om;
+  while ((om = tagRe.exec(text)) !== null) {
+    var tag = om[1];
+    var closeStr = "</" + tag + ">";
+    var closeIdx = text.indexOf(closeStr, om.index + om[0].length);
+    if (closeIdx < 0) continue;
+    var blockEnd = closeIdx + closeStr.length;
+    allBlocks.push({
+      tag: tag,
+      start: om.index,
+      end: blockEnd,
+      content: text.slice(om.index + om[0].length, closeIdx),
+    });
   }
 
   // MEMORY[name] 块
@@ -402,7 +360,7 @@ function dissectSP(text) {
     return a.start - b.start;
   });
 
-  // 去重: 同一 start+end 只保留一个 (嵌套块可能被内外两次匹配)
+  // 去重: 同一 start+end 只保留一个
   var seen = {};
   allBlocks = allBlocks.filter(function (b) {
     var key = b.start + ":" + b.end;
@@ -462,70 +420,6 @@ function dissectSP(text) {
   }
 
   return result;
-}
-
-// 递归下钻 proto · 原地改每个 wire=2 字段
-function deepStripProtoSideChannels(fields, depth) {
-  if (depth === undefined) depth = 0;
-  if (depth > 16) return 0; // 防病态深度 · 天之道不病不作
-  let changed = 0;
-  for (const fn of Object.keys(fields)) {
-    const arr = fields[fn];
-    if (!arr || !arr.length) continue;
-    for (const e of arr) {
-      if (e.w !== 2) continue;
-      const buf = Buffer.isBuffer(e.b) ? e.b : Buffer.from(e.b);
-      // 先尝试 parse 为 nested proto · 不成再当文本
-      let nestedOk = false;
-      try {
-        const nested = parseProto(buf);
-        // 有意义的 proto: 至少一个字段, 且结构合理
-        if (Object.keys(nested).length > 0) {
-          const sub = deepStripProtoSideChannels(nested, depth + 1);
-          if (sub > 0) {
-            e.b = serializeProto(nested);
-            changed += sub;
-          }
-          nestedOk = true;
-        }
-      } catch {
-        /* 非 proto · 落入文本路径 */
-      }
-      if (nestedOk) continue;
-      if (looksLikeUtf8Text(buf)) {
-        const orig = buf.toString("utf8");
-        if (hasSideChannels(orig)) {
-          const stripped = stripSideChannelBlocks(orig);
-          if (stripped !== orig) {
-            e.b = Buffer.from(stripped, "utf8");
-            changed++;
-          }
-        }
-      }
-    }
-  }
-  return changed;
-}
-
-// 对整个 Connect-RPC frame buffer 做 deepStrip · 返回新 body (不变则返原)
-function deepStripRequestBody(reqBody) {
-  try {
-    const frames = parseFrames(reqBody);
-    if (!frames.length) return { body: reqBody, changed: 0 };
-    const f0 = frames[0];
-    const topFields = parseProto(f0.payload);
-    const c = deepStripProtoSideChannels(topFields, 0);
-    if (c === 0) return { body: reqBody, changed: 0 };
-    const newPayload = serializeProto(topFields);
-    const rest = frames.slice(1).map((f) => buildFrame(f.flags, f.payload));
-    return {
-      body: Buffer.concat([buildFrame(f0.flags, newPayload), ...rest]),
-      changed: c,
-    };
-  } catch (e) {
-    log("deepStripRequestBody error:", e.message);
-    return { body: reqBody, changed: 0 };
-  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -758,11 +652,7 @@ function modifySPProto(reqBody) {
       changed = true;
     }
     topFields[MSGS_FIELD] = newMsgs;
-    // 深度净化: 无论 SP 是否改过, 其他字段里的侧信道一律剥净 (双保险)
-    const deepChanged = deepStripProtoSideChannels(topFields, 0);
-    if (!changed && deepChanged === 0) return reqBody;
-    if (deepChanged > 0)
-      log(`[DEEP-STRIP] nested side-channels cleaned: ${deepChanged}`);
+    if (!changed) return reqBody;
     const newPayload = serializeProto(topFields);
     const rest = frames.slice(1).map((f) => buildFrame(f.flags, f.payload));
     return Buffer.concat([buildFrame(f0.flags, newPayload), ...rest]);
@@ -792,11 +682,7 @@ function modifyRawSP(reqBody) {
       topFields[3] = [{ w: 2, b: Buffer.from(kept, "utf8") }];
       spChanged = true;
     }
-    // 深度净化: 其他字段侧信道亦剥
-    const deepChanged = deepStripProtoSideChannels(topFields, 0);
-    if (!spChanged && deepChanged === 0) return reqBody;
-    if (deepChanged > 0)
-      log(`[DEEP-STRIP] RAW side-channels cleaned: ${deepChanged}`);
+    if (!spChanged) return reqBody;
     const newPayload = serializeProto(topFields);
     const rest = frames.slice(1).map((f) => buildFrame(f.flags, f.payload));
     return Buffer.concat([buildFrame(f0.flags, newPayload), ...rest]);
@@ -892,10 +778,9 @@ function routeUpstream(reqUrl) {
 }
 
 // 分三档:
-//   CHAT_PROTO    · GetChatMessage{,V2}          · SP 字段替换 + 深度净化
-//   CHAT_RAW      · RawGetChatMessage            · field[3] SP 替换 + 深度净化
-//   INFER_STRIP   · 其他 inference RPC           · 仅深度净化 (不碰 SP 字段)
-//   PASSTHROUGH   · 非 inference (如 mgmt)       · 零改写
+//   CHAT_PROTO    · GetChatMessage{,V2}    · SP 字段前置道魂
+//   CHAT_RAW      · RawGetChatMessage      · field[3] SP 前置道魂
+//   PASSTHROUGH   · 余皆透传 (含其他 inference RPC · mgmt 等)
 function classifyRPC(reqPath) {
   if (!reqPath) return "PASSTHROUGH";
   const m = /\/([A-Za-z0-9_]+)$/.exec(reqPath);
@@ -903,11 +788,6 @@ function classifyRPC(reqPath) {
   if (rpc === "GetChatMessage" || rpc === "GetChatMessageV2")
     return "CHAT_PROTO";
   if (rpc === "RawGetChatMessage") return "CHAT_RAW";
-  // 检查路径是否属 inference 服务 (见 INFERENCE_SERVICES)
-  // 路径形如 /exa.chat_web.ChatWebService/Foo
-  const svcM = /^\/([^/]+)\//.exec(reqPath);
-  const svc = svcM ? svcM[1] : "";
-  if (INFERENCE_SERVICES.has(svc)) return "INFER_STRIP";
   return "PASSTHROUGH";
 }
 
@@ -916,6 +796,15 @@ function classifyRPC(reqPath) {
 // ═══════════════════════════════════════════════════════════
 function handleControl(req, res) {
   const u = url.parse(req.url, true);
+  // CORS: webview (vscode-webview://) 直连需要
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
   res.setHeader("Content-Type", "application/json; charset=utf-8");
 
   if (u.pathname === "/origin/ping" && req.method === "GET") {
@@ -932,8 +821,13 @@ function handleControl(req, res) {
         self_size: _SELF_SIZE,
         self_file: __filename,
         features: {
-          deep_strip: true,
-          side_channel_tags: SIDE_CHANNEL_TAGS.length,
+          mode: "prepend-and-strip-strong-naming",
+          tao_header_chars: TAO_HEADER.length,
+          strip_targets: [
+            "head:You-are-Cascade-strong-naming",
+            "block:<communication_style>(keep nested <citation_guidelines>)",
+            "lines:Bug-fixing/Long-horizon/Planning/Testing/Verification/Progress",
+          ],
         },
       }),
     );
@@ -1018,45 +912,96 @@ function handleControl(req, res) {
   }
 
   if (u.pathname === "/origin/selftest" && req.method === "GET") {
-    // 自证全链路 · 构造 fakeOfficialSP → 三路径走一遍 → 返回 before/after 摘要
-    // v17.21 · fakeSP 包含用户端四路注入 (rules/skills/workflows/memories) · 验证皆化除
+    // 自证: 三路径前置道魂 + 损强名三处 · 验工程骨全留
     try {
-      const fakeSP =
-        "You are Cascade, a powerful agentic AI coding assistant.\n" +
-        "<communication_style>be terse</communication_style>\n" +
-        "<tool_calling>use only available tools</tool_calling>\n" +
-        "<making_code_changes>prefer minimal edits</making_code_changes>\n" +
-        "<running_commands>NEVER cd</running_commands>\n" +
-        "<user_rules>\nThe following are user-defined rules...\n<MEMORY[user_global]>old memory content</MEMORY[user_global]>\n</user_rules>\n" +
-        "<user_information>OS=windows</user_information>\n" +
-        "<workspace_information>ws=e:/道</workspace_information>\n" +
-        "<skills>skill-auto-heal:enabled</skills>\n" +
-        "<workflows>workflow-deploy:enabled</workflows>\n" +
-        "<memories>retrieved memory A; retrieved memory B</memories>\n" +
-        "<memory_system>global memory injection on</memory_system>\n" +
-        "<ide_metadata>cursor=51</ide_metadata>\n" +
-        "Bug fixing discipline: root cause first.\n" +
-        "Long-horizon workflow: notes.\n" +
-        "Planning cadence: plan.\n" +
-        "x".repeat(300);
-      // 路径 A: plain UTF-8 path (Windsurf v2 主)
+      // fakeSP 仿真官方 SP 结构: 强名起首 / communication_style 套嵌 citation_guidelines /
+      // 工程骨诸块 / 处于尾部之六行 discipline + 未尾 function call 示例
+      const fakeSP = [
+        "You are Cascade, a powerful agentic AI coding assistant.",
+        "The USER is interacting with you through a chat panel in their IDE.",
+        "The task may require modifying or debugging existing code.",
+        "Be mindful of that you are not the only one working in this environment.",
+        "Do not overstep your bounds.",
+        "For example: Do not create random files.",
+        "<communication_style>",
+        "Be terse and direct.",
+        "<communication_guidelines>be concise</communication_guidelines>",
+        "<markdown_formatting>use markdown</markdown_formatting>",
+        "<citation_guidelines>@/abs/path:line</citation_guidelines>",
+        "</communication_style>",
+        "<tool_calling>use only available tools</tool_calling>",
+        "<making_code_changes>prefer minimal edits</making_code_changes>",
+        "<running_commands>NEVER cd</running_commands>",
+        "<task_management>plan first then execute</task_management>",
+        "<debugging>root cause before symptom</debugging>",
+        "<calling_external_apis>use compatible versions</calling_external_apis>",
+        "<user_information>OS=windows</user_information>",
+        "<memory_system>memories are persistent</memory_system>",
+        "<ide_metadata>cursor=51</ide_metadata>",
+        "Bug fixing discipline: root cause first.",
+        "Long-horizon workflow: notes.",
+        "Planning cadence: plan.",
+        "Testing discipline: tests first.",
+        "Verification tools: playwright.",
+        "Progress notes: lightweight.",
+        "",
+        "When making function calls...",
+        "x".repeat(200),
+      ].join("\n");
+
+      // 工程骨 KEEP MARKERS · 必在 after
+      const KEEP_MARKERS = [
+        "道可道，非常道", // 道德经
+        "You are Cascade. 你的唯一本源", // TAO_HEADER
+        "<tool_calling>",
+        "<making_code_changes>",
+        "<running_commands>",
+        "<citation_guidelines>", // 从 communication_style 提出
+        "<task_management>",
+        "<debugging>",
+        "<calling_external_apis>",
+        "<user_information>",
+        "<memory_system>",
+        "<ide_metadata>",
+      ];
+      // 强名 LEAK MARKERS · 必不在 after (太上不知有之)
+      const LEAK_MARKERS = [
+        "powerful agentic AI coding assistant", // 起首强名
+        "pair programmer",
+        "<communication_style>", // 整块去
+        "</communication_style>",
+        "<communication_guidelines>",
+        "<markdown_formatting>",
+        "Bug fixing discipline:",
+        "Long-horizon workflow:",
+        "Planning cadence:",
+        "Testing discipline:",
+        "Verification tools:",
+        "Progress notes:",
+      ];
+      const missingKeep = (s) => KEEP_MARKERS.filter((m) => !s.includes(m));
+      const leaked = (s) => LEAK_MARKERS.filter((m) => s.includes(m));
+      const headOf = (s, n) => s.slice(0, n).replace(/\n/g, "\\n");
+
+      // 路径 A: plain UTF-8 path
       const topA = serializeProto({
         10: [{ w: 2, b: Buffer.from(fakeSP, "utf8") }],
       });
-      const frameA = buildFrame(0, topA);
-      const modA = modifySPProto(frameA);
+      const modA = modifySPProto(buildFrame(0, topA));
       const topAOut = parseProto(parseFrames(modA)[0].payload);
       const afterA = Buffer.from(topAOut[10][0].b).toString("utf8");
+
       // 路径 B: nested ChatMessage
-      const nested = serializeProto({
+      const nestedB = serializeProto({
         1: [{ w: 0, v: 0 }],
         2: [{ w: 2, b: Buffer.from(fakeSP, "utf8") }],
       });
-      const topB = serializeProto({ 10: [{ w: 2, b: nested }] });
+      const topB = serializeProto({ 10: [{ w: 2, b: nestedB }] });
       const modB = modifySPProto(buildFrame(0, topB));
       const topBOut = parseProto(parseFrames(modB)[0].payload);
       const nestOut = parseProto(Buffer.from(topBOut[10][0].b));
       const afterB = Buffer.from(nestOut[2][0].b).toString("utf8");
+
       // 路径 C: RawGetChatMessage · field[3]
       const topC = serializeProto({
         3: [{ w: 2, b: Buffer.from(fakeSP, "utf8") }],
@@ -1065,118 +1010,54 @@ function handleControl(req, res) {
       const topCOut = parseProto(parseFrames(modC)[0].payload);
       const afterC = Buffer.from(topCOut[3][0].b).toString("utf8");
 
-      // v17.21 · 侧信道全路径漏失自检: 凡用户端四路注入 (rules/skills/workflows/memories) 皆不可漏
-      const SIDE_CHANNEL_LEAK_MARKERS = [
-        "<communication_style>",
-        "<tool_calling>",
-        "<making_code_changes>",
-        "<running_commands>",
-        "<user_rules>",
-        "<user_information>",
-        "<workspace_information>",
-        "<skills>",
-        "<workflows>",
-        "<memories>",
-        "<memory_system>",
-        "<MEMORY[",
-        "<ide_metadata>",
-        "Bug fixing discipline",
-        "Long-horizon workflow",
-        "Planning cadence",
-      ];
-      function leaks(s) {
-        const hits = [];
-        for (const m of SIDE_CHANNEL_LEAK_MARKERS)
-          if (s.indexOf(m) >= 0) hits.push(m);
-        return hits;
-      }
-      const leakA = leaks(afterA);
-      const leakB = leaks(afterB);
-      const leakC = leaks(afterC);
       const summary = {
         ok: true,
+        version: "v5.1-道法自然-损强名",
+        mode: SP_MODE,
+        principle: "前置道魂 + 损强名三处. 太上不知有之 · 复得返自然",
         dao_chars: DAO_DE_JING_81.length,
         tao_header_chars: TAO_HEADER.length,
-        fake_sp_chars: fakeSP.length,
-        side_channel_markers_count: SIDE_CHANNEL_LEAK_MARKERS.length,
-        paths: {
-          plain_utf8: {
-            before_chars: fakeSP.length,
-            after_chars: afterA.length,
-            after_head: afterA.slice(0, 80),
-            contains_dao: afterA.includes("道可道"),
-            contains_you_are_cascade: afterA.startsWith(
-              "You are Cascade. 你的唯一",
-            ),
-            leaked_markers: leakA,
-            leaked_count: leakA.length,
-          },
-          nested_chat_message: {
-            before_chars: fakeSP.length,
-            after_chars: afterB.length,
-            after_head: afterB.slice(0, 80),
-            contains_dao: afterB.includes("道可道"),
-            leaked_markers: leakB,
-            leaked_count: leakB.length,
-          },
-          raw_sp: {
-            before_chars: fakeSP.length,
-            after_chars: afterC.length,
-            after_head: afterC.slice(0, 80),
-            contains_dao: afterC.includes("道可道"),
-            leaked_markers: leakC,
-            leaked_count: leakC.length,
-          },
-        },
+        keep_markers_count: KEEP_MARKERS.length,
+        leak_markers_count: LEAK_MARKERS.length,
+        paths: {},
+        all_paths_pass: false,
       };
-      // 路径 D: 深度净化 · MEMORY 嵌在 user message (role=1) 的 content 字段
-      // 此非 SP 结构, 之前会漏. 深度净化应清除其 side-channel 块.
-      const userMsgContent =
-        "帮我查一下代码.\n" +
-        "<MEMORY[dao-de-jing.md]>\n道可道,非常道...\n</MEMORY[dao-de-jing.md]>\n" +
-        "<user_rules>旧规则 A</user_rules>\n" +
-        "<skills>skill-x</skills>\n" +
-        "剩余用户问题.\n";
-      const userMsg = serializeProto({
-        1: [{ w: 0, v: 1 }], // role=1 (user)
-        2: [{ w: 2, b: Buffer.from(userMsgContent, "utf8") }],
-      });
-      const topD = serializeProto({
-        2: [
-          { w: 2, b: userMsg },
-          {
-            w: 2,
-            b: serializeProto({
-              1: [{ w: 0, v: 0 }],
-              2: [{ w: 2, b: Buffer.from(fakeSP, "utf8") }],
-            }),
-          },
-        ],
-      });
-      const modD = modifySPProto(buildFrame(0, topD));
-      const topDOut = parseProto(parseFrames(modD)[0].payload);
-      const userMsgOut = parseProto(Buffer.from(topDOut[2][0].b));
-      const afterUserContent = Buffer.from(userMsgOut[2][0].b).toString("utf8");
-      const leakD = leaks(afterUserContent);
-      summary.paths.deep_strip_user_msg = {
-        before_chars: userMsgContent.length,
-        after_chars: afterUserContent.length,
-        before_head: userMsgContent.slice(0, 80).replace(/\n/g, "\\n"),
-        after_head: afterUserContent.slice(0, 80).replace(/\n/g, "\\n"),
-        leaked_markers: leakD,
-        leaked_count: leakD.length,
-        contains_real_question: afterUserContent.includes("剩余用户问题"),
-      };
-      summary.all_paths_pass =
-        summary.paths.plain_utf8.contains_dao &&
-        summary.paths.plain_utf8.contains_you_are_cascade &&
-        summary.paths.plain_utf8.leaked_count === 0 &&
-        summary.paths.nested_chat_message.contains_dao &&
-        summary.paths.nested_chat_message.leaked_count === 0 &&
-        summary.paths.raw_sp.contains_dao &&
-        summary.paths.raw_sp.leaked_count === 0 &&
-        summary.paths.deep_strip_user_msg.leaked_count === 0 &&
-        summary.paths.deep_strip_user_msg.contains_real_question;
+
+      function judge(name, after, before) {
+        const missing = missingKeep(after);
+        const leaks = leaked(after);
+        const containsDao = after.includes("道可道，非常道");
+        const containsTaoHeader =
+          after.includes("你的唯一本源与法则是《道德经》");
+        const tao_first = after.startsWith("You are Cascade. 你的唯一本源");
+        summary.paths[name] = {
+          before_chars: before.length,
+          after_chars: after.length,
+          delta: after.length - before.length,
+          contains_dao: containsDao,
+          contains_tao_header: containsTaoHeader,
+          tao_header_first: tao_first,
+          missing_keep_markers: missing,
+          missing_count: missing.length,
+          leaked_strong_naming: leaks,
+          leak_count: leaks.length,
+          before_head: headOf(before, 80),
+          after_head: headOf(after, 80),
+        };
+        return (
+          containsDao &&
+          containsTaoHeader &&
+          tao_first &&
+          missing.length === 0 &&
+          leaks.length === 0
+        );
+      }
+
+      const okA = judge("plain_utf8", afterA, fakeSP);
+      const okB = judge("nested_chat_message", afterB, fakeSP);
+      const okC = judge("raw_sp", afterC, fakeSP);
+      summary.all_paths_pass = okA && okB && okC;
+
       res.end(JSON.stringify(summary, null, 2));
     } catch (e) {
       res.statusCode = 500;
@@ -1317,16 +1198,9 @@ const server = http.createServer(async (req, res) => {
     let modified = body;
     if (SP_MODE === "invert") {
       if (kind === "CHAT_PROTO") {
-        modified = modifySPProto(body); // SP 替换 + 深度净化
+        modified = modifySPProto(body); // SP 字段前置道魂
       } else if (kind === "CHAT_RAW") {
-        modified = modifyRawSP(body); // field[3] SP 替换 + 深度净化
-      } else if (kind === "INFER_STRIP") {
-        // 所有其他 inference RPC · 仅深度净化 (不动 SP 字段)
-        const r = deepStripRequestBody(body);
-        modified = r.body;
-        if (r.changed > 0) {
-          log(`#${rid} ${kind} STRIPPED ${r.changed} side-channels`);
-        }
+        modified = modifyRawSP(body); // field[3] SP 前置道魂
       }
     }
     if (modified !== body) {
@@ -1366,18 +1240,88 @@ server.on("listening", () => {
 
 server.on("error", (e) => {
   log("server err:", e.message);
-  process.exit(1);
+  // 不 exit · extension.js require 时由 start() reject 处理
 });
 
-// --test 跳 listen, 便于 require 做单元验证
-if (!process.argv.includes("--test")) {
-  server.listen(PORT, "127.0.0.1");
+// ═══════════════════════════════════════════════════════════
+// v18.0 · 库接口 · ext-host 进程内调用 · 损 spawn detached 之根
+// ═══════════════════════════════════════════════════════════
+function start(opts) {
+  opts = opts || {};
+  const port = opts.port != null ? opts.port : PORT;
+  const host = opts.host || "127.0.0.1";
+  if (opts.mode && SP_MODE_VALID.has(opts.mode)) {
+    SP_MODE = opts.mode;
+  }
+  return new Promise((resolve, reject) => {
+    const onListen = () => {
+      server.removeListener("error", onError);
+      const addr = server.address();
+      const realPort = (addr && addr.port) || port;
+      log(`[lib] in-process listen :${realPort}`);
+      resolve({
+        server,
+        port: realPort,
+        host,
+        close: () =>
+          new Promise((r) => {
+            try {
+              server.close(() => r());
+            } catch {
+              r();
+            }
+          }),
+        getMode: () => SP_MODE,
+        setMode: (m) => {
+          if (SP_MODE_VALID.has(m)) {
+            SP_MODE = m;
+            try {
+              _saveModeToDisk(SP_MODE);
+            } catch {}
+            return true;
+          }
+          return false;
+        },
+      });
+    };
+    const onError = (e) => {
+      server.removeListener("listening", onListen);
+      reject(e);
+    };
+    server.once("listening", onListen);
+    server.once("error", onError);
+    server.listen(port, host);
+  });
 }
 
-process.on("uncaughtException", (e) =>
-  log("[FATAL] " + (e && e.stack ? e.stack : e)),
-);
-process.on("unhandledRejection", (r) => log("[REJ] " + r));
+function stop() {
+  return new Promise((r) => {
+    try {
+      server.close(() => r());
+    } catch {
+      r();
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// CLI 路径 · 仅 node 直跑时启 · require 时不污染父进程
+// ═══════════════════════════════════════════════════════════
+function _runCli() {
+  server.on("error", () => {
+    process.exit(1);
+  });
+  if (!process.argv.includes("--test")) {
+    server.listen(PORT, "127.0.0.1");
+  }
+  process.on("uncaughtException", (e) =>
+    log("[FATAL] " + (e && e.stack ? e.stack : e)),
+  );
+  process.on("unhandledRejection", (r) => log("[REJ] " + r));
+}
+
+// require.main === module 即 CLI 直跑 · 否则被 require 入库使用
+if (require.main === module) _runCli();
 
 module.exports = {
   invertSP,
@@ -1399,12 +1343,25 @@ module.exports = {
   findMsgsField,
   routeUpstream,
   classifyRPC,
-  // v17.44 深度净化 (以神遇而不以目视)
-  SIDE_CHANNEL_TAGS,
-  stripSideChannelBlocks,
-  hasSideChannels,
-  deepStripProtoSideChannels,
-  deepStripRequestBody,
+  server,
   // v17.55 解剖 (抱一知天下势)
   dissectSP,
+  // v17.66 原观
+  observeSPFromBody,
+  // v18.0 · 库接口 (ext-host 进程内 · 损 spawn detached 之根)
+  start,
+  stop,
+  // v18.0 · 模式查改 (库使用)
+  getMode: () => SP_MODE,
+  setMode: (m) => {
+    if (SP_MODE_VALID.has(m)) {
+      SP_MODE = m;
+      try {
+        _saveModeToDisk(SP_MODE);
+      } catch {}
+      return true;
+    }
+    return false;
+  },
+  _runCli,
 };

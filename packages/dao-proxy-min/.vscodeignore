@@ -1,0 +1,25 @@
+.vscode/**
+.git/**
+.gitignore
+.vscodeignore
+**/*.map
+**/.DS_Store
+**/Thumbs.db
+_build_vsix.ps1
+tests/**
+*.vsix
+selftest_out.json
+# v2.1: 排测试/调试临时件 (按扩展 · 不误伤 _dao_81.txt 等核心)
+**/_*.out
+**/_*.log
+**/_*.err
+**/_*.bak
+**/_*.tmp
+**/_l1*.txt
+**/_l1*.json
+# 测试工具脚本 (开发期用 · 不入运行时)
+**/_*.py
+**/_*.ps1
+**/_*.js
+!**/_dao_*.txt
+!**/_dao_*.js

@@ -1,28 +1,97 @@
 # Windsurf Assistant
 
-> 水善利万物而不争，处众人之所恶，故几于道。
+> 水善利万物而不争，处众人之所恶，故几于道。 —《八章》
+>
+> 道法自然 · 无为而无不为。 —《二十五、三十七章》
 
-Windsurf multi-account management — auto-rotate, quota-aware, zero-config.
+Windsurf 三器: 切号 · 反代 · 部署. 各安其位, 不相干扰.
 
-## Structure
+## 三器 (Triad)
 
-| Directory | Description | Version |
-|-----------|-------------|---------|
-| [`packages/wam/`](packages/wam/) | WAM 本源 · full edition · message anchoring · token pool · Firebase + Devin | v17.42.20 |
-| [`packages/wam-proxy/`](packages/wam-proxy/) | WAM + reverse proxy · archived · 后续独立发布 | v17.58.0 🧊 |
-| [`wam-bundle/`](wam-bundle/) | **部署包** · minimal single-file · Devin-only · clean UI | **v2.1.0** ✅ |
+| Plugin | Concern | Edition | Version |
+|---|---|---|---|
+| [`packages/wam/`](packages/wam/) | **切号** · account rotation · message anchoring · token pool · Firebase + Devin | full | v17.42.20 |
+| [`packages/dao-proxy-min/`](packages/dao-proxy-min/) | **反代** · Cascade Connect-RPC reverse proxy · prepend 道德经 SP · 一气贯三清 | minimal | **v5.0.0** 🆕 |
+| [`wam-bundle/`](wam-bundle/) | **部署** · single-file Devin-only WAM · zero-config | minimal | v2.1.0 ✅ |
 
-## Quick Start (wam-bundle)
+> 旧 `packages/wam-proxy/` (v17.51 wam-dao) 已并入 `dao-proxy-min` v5.0 道法自然 (损 250 行). 见下文沿革.
 
-1. Put accounts in `~/.wam/accounts.md`:
-   ```
-   user@example.com password123
-   user2@shop.com----password456
-   ```
-2. Copy `wam-bundle/` to your extensions directory, or build VSIX
-3. Done — it activates on startup, no interaction needed
+---
 
-## WAM 本源 (packages/wam)
+## packages/dao-proxy-min · 反代 (NEW · v5.0 道法自然)
+
+反代 Windsurf Cascade 之 Connect-RPC, 前置 **TAO_HEADER + 道德经八十一章** 至官方 SP. 一气贯三清:
+
+- **道层** — TAO_HEADER + 道德经81章 (永在前)
+- **法层** — 官方 Cascade SP **完整保留** (workspace/tool/citation/mcp/memory_system/ide_metadata 全谱)
+- **术层** — proto 不动, 各工作区/工具/MCP 自然运行
+
+```text
+LLM 实收 = TAO_HEADER + 道德经 + "---" + 官方 SP + 用户消息 + 工具 schema
+```
+
+### 演化 (v3 → v4 → v5)
+
+| 版本 | 路 | 字 |
+|---|---|---|
+| v3.0 | 极简反代 · 3 命令 · 固定端口 | 朴 |
+| v4.0 万法归宗 | 27 标签深度剥离 · 字段级 proto · per-user 端口 · SSE · 二态热切 · 7 命令 | 增 |
+| **v5.0 道法自然** | **跳出剥/留二元** · 损 250 行 · 道魂在前 · 法骨完保 · 术工不动 | **损** |
+
+> 为学日益, 为道日损. 损之又损, 以至于无为. —《四十八章》
+
+### 7 命令
+
+| 命令 | 道义 |
+|---|---|
+| 道Agent: 启 (invert) | 反者道之动 · 启代理 + 锚 settings + LS 重启 |
+| 官方Agent: 启 (passthrough) | 上善若水 · 透传观照 · SP 不改 |
+| 道Agent: 切换模式 (道 ⇄ 官方) | 二态热切 · 零代价翻转 |
+| 道Agent: 浏览器观真 SP | 打开 `/origin/preview` · 全貌解剖 |
+| 全链路自检 (E2E) | 致虚守静 · L1+L2 报告 |
+| 闭环自检 (L1 + L2) | 同上 |
+| 了事拂衣去 · 净卸 | 停反代 · 清设置 · 卸插件 · 归本源 |
+
+### 控制面 HTTP 端点
+
+```http
+GET  /origin/ping           # 状态 (mode/uptime/req_total/dao_chars)
+GET  /origin/mode           # 当前模式
+POST /origin/mode           # 切模式 {"mode":"invert"|"passthrough"}
+GET  /origin/preview        # 实时全貌 (before+after+结构解剖)
+GET  /origin/last           # 最近一次 SP 注入
+GET  /origin/realprompt     # 捕获轨实 SP
+GET  /origin/selftest       # 三路径闭环自检
+GET  /origin/stream         # SSE 推式 (sp/mode/hb)
+GET/POST/DELETE /origin/custom_sp  # 自定义 SP CRUD
+```
+
+### per-user 端口隔离
+
+多账号同机时, 每用户自动分配唯一端口 (FNV-1a hash of username → 8889..8988). 无配置, 无协调, 自然隔离. 可通过 `dao.origin.port` 显式覆盖.
+
+### 构建
+
+```powershell
+cd packages/dao-proxy-min
+.\_build_vsix.ps1                  # 打包
+.\_build_vsix.ps1 -RunL1           # 打包前 L1 自检
+.\_build_vsix.ps1 -RunL1 -RunL2Syn # +L2 合成测试 (须反代在跑)
+.\_build_vsix.ps1 -InstallLocal    # 打包 + 装本机 Windsurf
+```
+
+### 自检
+
+```text
+GET /origin/selftest → all_paths_pass: true
+  ├─ plain_utf8           道=✓ · 用户问题=✓
+  ├─ nested_chat_message  道=✓ · 用户问题=✓
+  └─ raw_sp               道=✓ · 用户问题=✓
+```
+
+---
+
+## packages/wam · 切号 (full edition)
 
 Full edition with all features:
 
@@ -34,7 +103,9 @@ Full edition with all features:
 - **ExtHost sentinel** — event-loop lag detection
 - **Instance coordination** — heartbeat + claims across windows
 
-## wam-bundle (Deployment)
+---
+
+## wam-bundle · 部署 (minimal)
 
 Minimal single-file edition (~106KB):
 
@@ -46,6 +117,16 @@ Minimal single-file edition (~106KB):
 - **Webview panel** — sidebar + editor panel, live quota bars
 - **Invisible mode** — zero-UI stealth operation
 
+### Quick Start
+
+1. Put accounts in `~/.wam/accounts.md`:
+   ```
+   user@example.com password123
+   user2@shop.com----password456
+   ```
+2. Copy `wam-bundle/` to your extensions directory, or build VSIX
+3. Done — activates on startup, zero interaction
+
 ### Testing
 
 ```bash
@@ -53,9 +134,11 @@ cd wam-bundle
 node _test_harness.cjs           # offline tests (24 cases)
 ```
 
+---
+
 ## Configuration
 
-All settings under `wam.*` in settings.
+### WAM (`wam.*`)
 
 | Setting | Default | Description |
 |---|---|---|
@@ -65,15 +148,37 @@ All settings under `wam.*` in settings.
 | `wam.rotatePeriodMs` | `0` | Time rotation (ms, 0=off) |
 | `wam.accountsFile` | `""` | Account file (auto-detect) |
 
+### dao-proxy-min (`dao.*`)
+
+| Setting | Default | Description |
+|---|---|---|
+| `dao.origin.port` | `0` (auto) | 反代端口 · 0=per-user FNV-1a hash · 非0则覆盖 |
+| `dao.origin.defaultMode` | `invert` | 首激默模 · `invert` / `passthrough` |
+| `dao.origin.banner` | `true` | 启动时显道德经横幅 |
+
+---
+
 ## Philosophy
 
-> 分而治之 · 鸡犬相闻 · 民至老死不相往来
+> 分而治之 · 鸡犬相闻 · 民至老死不相往来 —《八十章》
+>
+> 大制不割 —《二十八章》
+>
+> 朴散则为器, 圣人用之, 则为官长 —《二十八章》
 
-- **WAM** — account rotation (本仓)
-- **Proxy** — 道德经 prompt injection (后续独立插件)
+三器各安其位:
 
-Two concerns, two plugins, no interference.
+- **wam** — 切号轮换 (account rotation)
+- **dao-proxy-min** — 道德经身份锚 (prompt injection)
+- **wam-bundle** — 单文件部署 (single-file deployment)
+
+三关隔离, 互不干扰. 用户按需取舍.
 
 ## License
 
-MIT
+- `packages/wam/` · `wam-bundle/` — MIT
+- `packages/dao-proxy-min/` — Apache 2.0
+
+---
+
+*为学日益 · 为道日损 · 损之又损 · 以至于无为 · 无为而无不为*
