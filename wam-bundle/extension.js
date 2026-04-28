@@ -8,7 +8,7 @@ const https = require("node:https");
 const { URL } = require("node:url");
 
 // ═══ § 1 · 万法之资 ═══
-const VERSION = "2.1.0";
+const VERSION = "2.1.1";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
 const WINDSURF = "https://windsurf.com";
@@ -915,6 +915,7 @@ async function verifyOneAccount(account) {
 }
 
 // 批量验证 · onlyStale=true 时跳过最近验过的 (默认 staleMin <= 30)
+// v2.1.1 根治: 全局限速协调 + 指数退避 + 失败自动重试 · 新用户首次全池验证不再卡死
 // parallel: 默认 3 (保守 · 防 Devin 限速 · 用户可改 wam.verify.parallel)
 // gapMs: 每个 verify 完成后的间隔 (默认 250ms 抖动)
 async function verifyAllAccounts(opts) {
@@ -922,7 +923,7 @@ async function verifyAllAccounts(opts) {
   _verifyAllInProgress = true;
   const o = opts || {};
   const onlyStale = !!o.onlyStale;
-  const parallel = Math.max(
+  const userParallel = Math.max(
     1,
     Math.min(8, _cfg("verify.parallel", 3) | 0 || 3),
   );
@@ -931,25 +932,34 @@ async function verifyAllAccounts(opts) {
   const total = _store.accounts.length;
   // 构建队列 (排除黑名单 + onlyStale 时排除最近验过的)
   const queue = [];
+  let uncheckedCount = 0;
   for (let i = 0; i < total; i++) {
     const a = _store.accounts[i];
     if (_store.isBanned(a.email)) continue;
+    const h = _store.getHealth(a.email);
+    if (!h.checked) uncheckedCount++;
     if (onlyStale) {
-      const h = _store.getHealth(a.email);
       if (h.checked && h.staleMin >= 0 && h.staleMin < staleThresholdMin)
         continue;
     }
     queue.push(i);
   }
+  // 道法自然 · 首次验证 (>50% 未验) → 降低并行度 · 加大间隔 · 防 Devin 整批拉黑
+  const isFirstTime = uncheckedCount > total * 0.5;
+  const parallel = isFirstTime ? Math.min(userParallel, 2) : userParallel;
+  const effectiveGapMs = isFirstTime ? Math.max(gapMs, 1500) : gapMs;
   log(
     "verifyAll: 启动 · 候选 " +
       queue.length +
       "/" +
       total +
+      " · 未验 " +
+      uncheckedCount +
       " · 并行 " +
       parallel +
+      (isFirstTime ? "(首次降速)" : "") +
       " · gap " +
-      gapMs +
+      effectiveGapMs +
       "ms" +
       (onlyStale ? " · onlyStale" : ""),
   );
@@ -957,8 +967,19 @@ async function verifyAllAccounts(opts) {
     fail = 0,
     done = 0;
   const t0 = Date.now();
+  // v2.1.1 全局限速协调: 所有 worker 共享暂停状态 · 一人中招全队等
+  let _globalPauseUntil = 0;
+  let _rateLimitHits = 0;
+  const _failedIndices = []; // 收集失败的 idx · 后续重试
+  async function _waitGlobalPause() {
+    while (Date.now() < _globalPauseUntil) {
+      const wait = Math.min(_globalPauseUntil - Date.now(), 2000);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    }
+  }
   async function worker() {
     while (queue.length > 0) {
+      await _waitGlobalPause(); // 尊重全局暂停
       const idx = queue.shift();
       const a = _store.accounts[idx];
       if (!a) continue;
@@ -968,6 +989,9 @@ async function verifyAllAccounts(opts) {
         if (r.ok) {
           _store.setHealth(a.email, r.q);
           ok++;
+          // 连续成功 → 逐步恢复退避
+          if (_rateLimitHits > 0)
+            _rateLimitHits = Math.max(0, _rateLimitHits - 1);
           log(
             "verify [" +
               idx +
@@ -985,23 +1009,37 @@ async function verifyAllAccounts(opts) {
           );
         } else {
           fail++;
+          _failedIndices.push(idx);
           log("verify [" + idx + "] " + tag + " ✗ " + r.stage + ": " + r.error);
-          // 限速识别: rate-limit / too many requests → 整批暂停 5s
+          // v2.1.1 全局限速: 指数退避 5s → 15s → 30s → 60s · 全 worker 共享
           if (r.error && /rate.?limit|too.many|429/i.test(String(r.error))) {
-            log("verifyAll: 命中限速 · 整批暂停 5s");
-            await new Promise((r) => setTimeout(r, 5000));
+            _rateLimitHits++;
+            const backoff = Math.min(
+              60000,
+              5000 * Math.pow(2, _rateLimitHits - 1),
+            );
+            _globalPauseUntil = Date.now() + backoff;
+            log(
+              "verifyAll: 限速#" +
+                _rateLimitHits +
+                " · 全局暂停 " +
+                Math.round(backoff / 1000) +
+                "s",
+            );
           }
         }
       } catch (e) {
         fail++;
+        _failedIndices.push(idx);
         log("verify [" + idx + "] " + tag + " 异常 " + e.message);
       }
       done++;
-      // 每 5 个 broadcast 一次 (避免每次都重渲染)
-      if (done % 5 === 0 || queue.length === 0) _broadcastUI();
-      if (gapMs > 0 && queue.length > 0) {
+      // 每 3 个 broadcast 一次 (首次验证时用户需要更频繁的反馈)
+      if (done % (isFirstTime ? 3 : 5) === 0 || queue.length === 0)
+        _broadcastUI();
+      if (effectiveGapMs > 0 && queue.length > 0) {
         // 抖动: gapMs ± 30%
-        const jitter = Math.round(gapMs * (0.7 + Math.random() * 0.6));
+        const jitter = Math.round(effectiveGapMs * (0.7 + Math.random() * 0.6));
         await new Promise((r) => setTimeout(r, jitter));
       }
     }
@@ -1010,10 +1048,31 @@ async function verifyAllAccounts(opts) {
   for (let i = 0; i < parallel; i++) workers.push(worker());
   try {
     await Promise.all(workers);
-  } finally {
-    _verifyAllInProgress = false;
-    _broadcastUI();
+  } catch {}
+  // v2.1.1 自动重试: 首轮失败的账号 · 串行 + 长间隔 · 水善利万物而不争
+  if (_failedIndices.length > 0 && _failedIndices.length <= total * 0.8) {
+    const retryCount = _failedIndices.length;
+    log("verifyAll: 重试 " + retryCount + " 个失败账号 · 串行 · gap 3s");
+    let retryOk = 0;
+    for (const idx of _failedIndices) {
+      const a = _store.accounts[idx];
+      if (!a) continue;
+      await new Promise((r) => setTimeout(r, 3000 + Math.random() * 2000));
+      try {
+        const r = await verifyOneAccount(a);
+        if (r.ok) {
+          _store.setHealth(a.email, r.q);
+          retryOk++;
+          fail--;
+          ok++;
+          if (retryOk % 3 === 0) _broadcastUI();
+        }
+      } catch {}
+    }
+    log("verifyAll: 重试完成 · " + retryOk + "/" + retryCount + " 恢复");
   }
+  _verifyAllInProgress = false;
+  _broadcastUI();
   const dur = Math.round((Date.now() - t0) / 1000);
   log("verifyAll: 完成 · " + ok + " ✓ / " + fail + " ✗ · " + dur + "s");
   return { ok: true, total: ok + fail, ok, fail, durSec: dur };
@@ -2695,14 +2754,26 @@ async function activate(context) {
     }, delay);
     context.subscriptions.push({ dispose: () => clearTimeout(t) });
 
-    // ── 内化原 "refresh" 按钮: 启动后 30s 自动 verifyAll(stale) ──
+    // ── 内化原 "refresh" 按钮: 启动后自动 verifyAll(stale) ──
     // 太上不知有之 · 用户启动后看到所有号自动验完 · 不需手动点
+    // v2.1.1: 首次使用 (>50% 未验) → 10s 即开始验证 · 用户更快看到额度
+    const uncheckedPct =
+      _store.accounts.filter((a) => !_store.getHealth(a.email).checked).length /
+      Math.max(1, _store.accounts.length);
+    const baseVerifyDelay = _cfg("autoVerifyOnStartupMs", 30000) | 0;
     const verifyDelay = Math.max(
       5000,
-      _cfg("autoVerifyOnStartupMs", 30000) | 0,
+      uncheckedPct > 0.5 ? Math.min(baseVerifyDelay, 10000) : baseVerifyDelay,
     );
     if (verifyDelay > 0) {
-      log("scheduling auto verify(stale) in " + verifyDelay + "ms");
+      log(
+        "scheduling auto verify(stale) in " +
+          verifyDelay +
+          "ms" +
+          (uncheckedPct > 0.5
+            ? " (首次加速 · " + Math.round(uncheckedPct * 100) + "% 未验)"
+            : ""),
+      );
       const tv = setTimeout(() => {
         if (_wamMode !== "wam") return;
         if (_verifyAllInProgress) return;
