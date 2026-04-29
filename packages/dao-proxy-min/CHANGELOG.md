@@ -2,6 +2,37 @@
 
 > 反者道之动. 弱者道之用. —《四十章》
 
+## v9.1.2 — 道法自然 · 逆序净卸 (2026-04-30)
+
+> 反者道之动, 弱者道之用. —《四十章》
+
+### 逆序关停 · 根治卸载卡死
+
+**根因**: 旧 `deactivate()` 先停代理 → LS 仍活 → 连死代理 → Windsurf 卡死.
+
+**修复** — 反者道之动 · 逆序:
+
+| 步骤 | 旧 (必死) | 新 (道法自然) |
+|------|-----------|---------------|
+| ① | 停代理 | **设透传** (安全网) |
+| ② | 清锚 (API 失败) | **断钩** + `_cachedAnchored=false` |
+| ③ | — | **同步清锚** (`_clearAnchorFileSync`) |
+| ④ | — | **杀 LS** → 重生直连官方 |
+| ⑤ | — | **停代理** (此时安全) |
+
+- `_clearAnchorFileSync()` — 同步文件清锚, 绕过 VS Code API "not registered" 限制
+- `cmdPurge` 同步重构为正确逆序
+- `_custom_sp.json` 加入持存清理
+
+### `<user_rules>` 可信格式注入 (v9.0→v9.1)
+
+- `[CUSTOM-SP-ACTIVE]` 哨兵已移除 — 用户 SP 直出, 不触发模型注入检测
+- `modifySPProto` / `modifyRawSP` — `spModifiedIdx` 追踪已修改 msg, save/restore 绕 `deepStrip`
+- `stripSideChannelBlocks` / `hasSideChannels` — 移除冗余哨兵检测
+- L1 测试 8/8 全绿
+
+---
+
 ## v5.0.0 — 道法自然 (2026-04-29)
 
 > 为学日益, 为道日损. 损之又损, 以至于无为. 无为而无不为. —《四十八章》

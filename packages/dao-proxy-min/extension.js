@@ -1,19 +1,27 @@
-// extension.js · dao-proxy-min v5.0 · 道法自然 · 一气贯三清
+// extension.js · dao-proxy-min v9.0 · 反者道之动 · 追本溯源彻底隔离
 //
-// 道德经 · 第二十五章: "人法地, 地法天, 天法道, 道法自然."
-// 道德经 · 第四十二章: "道生一, 一生二, 二生三, 三生万物."
-// 道德经 · 第四十八章: "为学日益, 为道日损. 损之又损, 以至于无为."
+// 道德经 · 第二十五章: "大曰逝, 逝曰远, 远曰反."
+// 道德经 · 第四十章: "反者道之动, 弱者道之用."
+// 道德经 · 第十一章: "三十辐共一毂, 当其无, 有车之用."
+// 道德经 · 第五十四章: "善建者不拔, 善抱者不脱."
 //
-// v5.0 道法自然 · 跳出剥/留二元矛盾:
-//   一气: 仅前置, 不剥不削. 道魂在前, 自然摄政.
-//   三清: 道层 (道德经81章身份本源)
-//         法层 (官方 Cascade SP 完整保留 · workspace/tool/citation/mcp)
-//         术层 (proto 不动 · 各工作区/工具/MCP 自然运行)
-//   损: source.js 中之深度净化侧信道全部代码 (~250 行).
+// v8.0 大曰逝逝曰远远曰反 · 复归 4.0 之道:
+//   大道已逝远 (v7.0-v7.6 过度剥离), 唯反归本源.
+//   整式 = TAO_HEADER + DAO_DE_JING_81 + "\n\n---\n\n" + 原SP (全保)
+//   道魂在前为本源, 工程坐标在后为器. 毂不可弃 · 弃则无车.
+//   替换一切 inference RPC (chat/summary/memory/ephemeral/...).
+//   _customSP 一态恒整替.
 //
-// v4.5 webview 闭环自举 (保留): 早期渲染 / vsc 容错 / stage tracker / error 显形
-// v4.4 (保留): nonce-CSP / portMapping / 主动首推 / noscript / data-dao-script
-// v4.0 (保留): spawn hook + 进程内 source.js + SSE 推式 + per-user 端口 + 二态热切 + 自检
+// v7.x (过度剥离 · v8.0 反之):
+//   v7.0-v7.4: 彻删官方身份/风格/规训, 仅保工具块替道德经. 过剥失器.
+//   v7.5: 加回 TAO_HEADER 弱声明. 仍剥.
+//   v7.6: 为道日损 · 极简. 仍剥.
+//   v7.8: 一态整替 _customSP. 仍剥.
+//
+// v4.0-v4.5 (本源 · v8.0 复归):
+//   TAO_HEADER 强身份 + DAO全文 + 原SP全保. 不剥不替不损.
+//   spawn hook + 进程内 source.js + SSE 推式 + per-user 端口 + 二态热切 + 自检
+//   webview 闭环自举 / nonce-CSP / portMapping / 主动首推
 //
 // 命令:
 //   wam.originInvert      · 道Agent 启
@@ -248,7 +256,7 @@ function vendorDir() {
 
 function findSourceJs() {
   const dir = vendorDir();
-  for (const n of ["源.js", "source.js"]) {
+  for (const n of ["source.js", "源.js"]) {
     const fp = path.join(dir, n);
     if (fs.existsSync(fp)) return fp;
   }
@@ -465,6 +473,36 @@ async function clearAnchor() {
 
   _cachedAnchored = false;
   L.info("anchor", "cleared → Windsurf defaults");
+}
+
+// 同步清锚 · 仅文件 · 用于 deactivate 等需极速清理的场景
+// VS Code API 异步且可能失败 (codeium.* 非注册键) · 文件直写最可靠
+function _clearAnchorFileSync() {
+  try {
+    const sp = _settingsJsonPath();
+    const json = _readSettingsJson(sp);
+    if (json) {
+      let changed = false;
+      for (const k of [
+        "codeium.apiServerUrl",
+        "codeium.inferenceApiServerUrl",
+        BACKUP_KEY_API,
+        BACKUP_KEY_INFER,
+      ]) {
+        if (k in json) {
+          delete json[k];
+          changed = true;
+        }
+      }
+      if (changed) {
+        _writeSettingsJson(sp, json);
+        L.info("anchor", `file-sync cleared → ${sp}`);
+      }
+    }
+  } catch (e) {
+    L.warn("anchor", `file-sync clear fail: ${e.message}`);
+  }
+  _cachedAnchored = false;
 }
 
 function isAnchored() {
@@ -883,6 +921,7 @@ class EssenceProvider {
   _armTimer() {
     this._stopTimer();
     if (!this._view || !this._view.visible) return;
+    // v7.3: 后备 timer 12s, sig poll 1.5s (sig 接 _customSP.at + sp_sig + custom_sig)
     this._timer = setInterval(() => this.refresh().catch(() => {}), 12000);
     this._sigTimer = setInterval(() => this._sigTick().catch(() => {}), 1500);
   }
@@ -914,7 +953,8 @@ class EssenceProvider {
         800,
       );
       if (!sig || !sig.ok) return;
-      const cur = `${sig.mode}|${sig.sp_sig}`;
+      // v7.3: sig 接 _customSP 之 custom_sig + custom_sp_at, 编辑后即触刷
+      const cur = `${sig.mode}|${sig.sp_sig}|${sig.custom_sig || "0"}|${sig.custom_sp_at || 0}`;
       if (cur === this._lastSig) return;
       this._lastSig = cur;
       this.refresh().catch(() => {});
@@ -986,9 +1026,10 @@ class EssenceProvider {
   async _handleSetCustomSP(msg) {
     if (!this._view) return;
     try {
+      // v7.8 一态整替 · keep_blocks 永 false (服务端 invertSP 永整替, 字段仅兼容旧版)
       const r = await httpPostJson(
         `http://127.0.0.1:${_cachedPort}/origin/custom_sp`,
-        { sp: msg.sp, keep_blocks: msg.keep_blocks, source: "webview" },
+        { sp: msg.sp, keep_blocks: false, source: "webview" },
         3000,
       );
       await this._view.webview.postMessage({
@@ -1129,8 +1170,8 @@ async function cmdOpenPreview() {
 async function cmdPurge() {
   const answer = await vscode.window.showWarningMessage(
     "了事拂衣去 · 水过无痕 · 将彻底卸载道Agent:\n" +
-      "① 停反代  ② 清 spawn hook  ③ 清 settings  ④ 清持存文件\n" +
-      "⑤ 清 .obsolete 残留  ⑥ 杀 LS 归官方  ⑦ 自卸插件\n" +
+      "① 透传  ② 断钩  ③ 清锚  ④ 杀LS  ⑤ 停代理\n" +
+      "⑥ 清持存  ⑦ 清残留  ⑧ 自卸插件\n" +
       "Windsurf 回归本源 · 零痕迹。确认？",
     { modal: true },
     "确认净卸",
@@ -1141,7 +1182,52 @@ async function cmdPurge() {
   out.show(true);
   out.appendLine("\n══════ 了事拂衣去 · 水过无痕 · 净卸开始 ══════");
 
-  // 1. 停反代
+  // ── 顺序至关重要 · 反者道之动 ──
+  // 先清锚+杀LS → 后停代理 · 防 LS 连死代理 → Windsurf 卡死
+
+  // 1. 先设透传 · 过渡期 LS 若仍连代理 · 安全透传
+  try {
+    if (_proxyHandle && _proxyHandle.setMode)
+      _proxyHandle.setMode("passthrough");
+    out.appendLine("  ✓ 代理已设透传 (安全过渡)");
+  } catch {}
+
+  // 2. 卸 spawn hook · 新 LS 不再被截持
+  try {
+    _cachedAnchored = false;
+    removeSpawnHook();
+    out.appendLine("  ✓ spawn hook 已卸");
+  } catch {}
+
+  // 3. 清除所有 dao 相关 settings (文件直写 + API 双保险)
+  // VS Code API 对 codeium.* 键可能失败 (非注册键) · 文件直写兜底
+  try {
+    _clearAnchorFileSync();
+    // API 补清 dao.* 注册键 (这些能成功)
+    const c = vscode.workspace.getConfiguration();
+    for (const k of [
+      "dao.origin.port",
+      "dao.origin.defaultMode",
+      "dao.origin.banner",
+    ]) {
+      try {
+        await c.update(k, undefined, vscode.ConfigurationTarget.Global);
+      } catch {}
+    }
+    out.appendLine("  ✓ 所有 dao 设置已清 (文件+API)");
+  } catch (e) {
+    out.appendLine(`  ⚠ 清设置: ${e.message}`);
+  }
+
+  // 4. 杀 LS · 使其重生 · 无钩无锚 → 直连官方
+  try {
+    const killed = await forceRestartLS();
+    out.appendLine(`  ✓ LS ${killed ? "已杀 · 将重生直连官方" : "未找到"}`);
+  } catch (e) {
+    out.appendLine(`  ⚠ 杀LS: ${e.message}`);
+  }
+
+  // 5. 停反代 · 此时 LS 已死或已重生直连官方 · 安全
   try {
     await proxyStop();
     out.appendLine("  ✓ 反代已停");
@@ -1149,39 +1235,14 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 停反代: ${e.message}`);
   }
 
-  // 2. 卸 spawn hook
-  try {
-    removeSpawnHook();
-    out.appendLine("  ✓ spawn hook 已卸");
-  } catch {}
-
-  // 3. 清除所有 dao 相关 settings
-  try {
-    const c = vscode.workspace.getConfiguration();
-    const keys = [
-      "codeium.apiServerUrl",
-      "codeium.inferenceApiServerUrl",
-      BACKUP_KEY_API,
-      BACKUP_KEY_INFER,
-      "dao.origin.port",
-      "dao.origin.defaultMode",
-      "dao.origin.banner",
-    ];
-    for (const k of keys) {
-      try {
-        await c.update(k, undefined, vscode.ConfigurationTarget.Global);
-      } catch {}
-    }
-    _cachedAnchored = false;
-    out.appendLine("  ✓ 所有 dao 设置已清");
-  } catch (e) {
-    out.appendLine(`  ⚠ 清设置: ${e.message}`);
-  }
-
-  // 4. 清 source.js 持存文件 (mode / lastinject)
+  // 6. 清 source.js 持存文件 (mode / lastinject / custom_sp)
   try {
     const vd = vendorDir();
-    const persistFiles = ["_origin_mode.txt", "_lastinject.json"];
+    const persistFiles = [
+      "_origin_mode.txt",
+      "_lastinject.json",
+      "_custom_sp.json",
+    ];
     let cleaned = 0;
     for (const f of persistFiles) {
       const fp = path.join(vd, f);
@@ -1197,7 +1258,7 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 清持存: ${e.message}`);
   }
 
-  // 5. 清 ~/.dao-proxy 目录 (如存在)
+  // 7. 清 ~/.dao-proxy 目录 (如存在)
   try {
     const daoProxyDir = path.join(os.homedir(), ".dao-proxy");
     if (fs.existsSync(daoProxyDir)) {
@@ -1208,7 +1269,7 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 清 .dao-proxy: ${e.message}`);
   }
 
-  // 6. 清 .obsolete 中 dao/wam 残留
+  // 8. 清 .obsolete 中 dao/wam 残留
   try {
     const extDir = path.join(os.homedir(), ".windsurf", "extensions");
     const obsFile = path.join(extDir, ".obsolete");
@@ -1230,15 +1291,7 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 清 .obsolete: ${e.message}`);
   }
 
-  // 7. 杀 LS · 使其重生直连官方
-  try {
-    const killed = await forceRestartLS();
-    out.appendLine(`  ✓ LS ${killed ? "已杀 · 将重生直连官方" : "未找到"}`);
-  } catch (e) {
-    out.appendLine(`  ⚠ 杀LS: ${e.message}`);
-  }
-
-  // 8. 自卸插件
+  // 9. 自卸插件
   out.appendLine("  → 卸载插件 dao-agi.dao-proxy-min ...");
   out.appendLine("══════ 了事拂衣去 · 水过无痕 · 道法自然 ══════\n");
 
@@ -1475,13 +1528,10 @@ function getEssenceHtml(proxyPort, nonce) {
   <pre id="sp" class="quiet">\u89c2\u2026</pre>
   <noscript><div style="padding:16px;color:#e08080;font-size:11px">\u811a\u672c\u88abCSP\u62e6\u622a \u00b7 \u8bf7\u91cd\u8f7d</div></noscript>
   <div id="editArea">
-    <textarea id="editText" placeholder="\u8f93\u5165\u81ea\u5b9a\u4e49\u63d0\u793a\u8bcd..."></textarea>
+    <textarea id="editText"></textarea>
     <div class="edit-bar">
-      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;font-size:9px;opacity:0.7;">
-        <input type="checkbox" id="keepBlocks" checked> \u4fdd\u7559\u5fc5\u8981\u6a21\u5757
-      </label>
-      <button class="eb save" id="editSave">\u2714 \u6ce8\u5165</button>
-      <button class="eb reset" id="editReset">\u2716 \u5f52\u9053</button>
+      <button class="eb save" id="editSave" title="Ctrl+Enter">\u2714 \u6ce8\u5165</button>
+      <button class="eb reset" id="editReset" title="\u6e05 _customSP \u00b7 \u56de\u9ed8\u9053\u5fb7\u7ecf\u8def\u5f84">\u2716 \u5f52\u9053</button>
       <span class="edit-status" id="editStatus"></span>
     </div>
   </div>
@@ -1515,7 +1565,7 @@ function getEssenceHtml(proxyPort, nonce) {
             var meta = document.getElementById('meta');
             if (meta) meta.textContent = (p.after_chars || p.before_chars || text.length) + ' \u5b57';
             var srcEl = document.getElementById('source');
-            if (srcEl) srcEl.textContent = (p.mode === 'invert' ? '\u5b9e\u6536' : '\u539f\u53d1') + ' · v5.0\u9053\u6cd5\u81ea\u76ae · ' + tag;
+            if (srcEl) srcEl.textContent = (p.mode === 'invert' ? '\u5b9e\u6536' : '\u539f\u53d1') + ' · v7.6\u4e3a\u9053\u65e5\u635f\u00b7\u9053\u6cd5\u81ea\u7136 · ' + tag;
             _hasRendered = true;
             _stage(tag + ':ok');
           }
@@ -1664,8 +1714,12 @@ function getEssenceHtml(proxyPort, nonce) {
 
     if (viewMode === 'actual' && proxy && proxy.mode === 'invert' && proxy.after) {
       showText(proxy.after, ts);
-      var src = '\u5b9e\u6536 \u00b7 LLM\u5b9e\u6536';
-      if (proxy.custom_sp) src += ' \u00b7 \u81ea\u5b9a\u4e49';
+      // v7.3: synthesized_from 区分真捕获 vs 合成 sample, 让用户知所见之态
+      var src;
+      if (proxy.synthesized_from === 'captured') src = '\u5b9e\u6536 \u00b7 LLM\u5b9e\u6536 (\u771f\u6355\u83b7)';
+      else if (proxy.synthesized_from === 'sample') src = '\u9884\u89c8 \u00b7 \u5408\u6210sample\u00b7\u4e0eLLM\u5b9e\u6536\u540c\u7ed3\u6784';
+      else src = '\u5b9e\u6536 \u00b7 LLM\u5b9e\u6536';
+      if (proxy.custom_sp) src += ' \u00b7 \u81ea\u5b9a\u4e49' + (proxy.custom_sp_chars ? proxy.custom_sp_chars + '\u5b57' : '');
       src += ' \u00b7 ' + (proxy.after_chars || proxy.after.length) + '\u5b57';
       $source.textContent = src;
       startAgeTick(proxy.age_s);
@@ -1715,30 +1769,46 @@ function getEssenceHtml(proxyPort, nonce) {
     lastText = '';
   }
 
-  // 编辑模式
+  // 编辑模式 · v7.8 反者道之动 · 所见即所改, 所改即所注 · 一态整替
+  // 编辑切换 → textarea 装当前面板"实时注入"全文 (lastText / _customSP.sp)
+  // 保存 → _customSP.sp = textarea 文 → 下次反代 LLM 实收即此文
   var $editToggle = document.getElementById('editToggle');
   var $editArea = document.getElementById('editArea');
   var $editText = document.getElementById('editText');
   var $editSave = document.getElementById('editSave');
   var $editReset = document.getElementById('editReset');
   var $editStatus = document.getElementById('editStatus');
-  var $keepBlocks = document.getElementById('keepBlocks');
   var $customBadge = document.getElementById('customBadge');
   var editMode = false;
+  var _editClosing = null;
+
+  function _closeEditMode() {
+    editMode = false;
+    $editArea.classList.remove('show');
+    $editToggle.classList.remove('edit-active');
+    $sp.style.display = '';
+    if (_editClosing) { clearTimeout(_editClosing); _editClosing = null; }
+  }
 
   $editToggle.addEventListener('click', function() {
     editMode = !editMode;
     if (editMode) {
       $editArea.classList.add('show'); $editToggle.classList.add('edit-active'); $sp.style.display = 'none';
-      if (!$editText.value && lastText) $editText.value = lastText;
-      vsc.postMessage({ command: 'getCustomSP' }); $editText.focus();
-    } else { $editArea.classList.remove('show'); $editToggle.classList.remove('edit-active'); $sp.style.display = ''; }
+      // v7.8 所见即所改: textarea 立装当前面板显文 (即"实时注入"全文)
+      // 既有 _customSP.sp → 同 lastText (一致), 无 _customSP → 装当前 invertSP 之 after
+      // 服务端 getCustomSP 拉真值, 若已设则覆盖 (但通常与 lastText 同, 因 webview 显的就是 _customSP.sp)
+      $editText.value = lastText || '';
+      $editStatus.textContent = '';
+      vsc.postMessage({ command: 'getCustomSP' });
+      $editText.focus();
+    } else { _closeEditMode(); }
   });
   $editSave.addEventListener('click', function() {
     var sp = $editText.value;
     if (!sp || !sp.trim()) { $editStatus.textContent = '\u2716 \u5185\u5bb9\u4e0d\u53ef\u4e3a\u7a7a'; return; }
     $editStatus.textContent = '\u4fdd\u5b58\u4e2d\u2026';
-    vsc.postMessage({ command: 'setCustomSP', sp: sp.trim(), keep_blocks: $keepBlocks.checked });
+    // v7.8 一态整替 · 不再传 keep_blocks (服务端忽略, 永整替)
+    vsc.postMessage({ command: 'setCustomSP', sp: sp.trim() });
   });
   $editReset.addEventListener('click', function() { $editStatus.textContent = '\u6e05\u9664\u4e2d\u2026'; vsc.postMessage({ command: 'resetCustomSP' }); });
   $editText.addEventListener('keydown', function(e) { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); $editSave.click(); } });
@@ -1759,14 +1829,29 @@ function getEssenceHtml(proxyPort, nonce) {
     if (e.data.type === 'customSP') {
       var r = e.data;
       if (r.action === 'get') {
-        if (r.has_custom && r.sp) { $editText.value = r.sp; $keepBlocks.checked = r.keep_blocks !== false; updateCustomBadge(true, r.chars); }
-        $editStatus.textContent = r.has_custom ? '\u5f53\u524d\u5df2\u8bbe' : '\u672a\u8bbe\u7f6e';
+        // v7.8: 已设则覆盖 lastText 之初值 (虽通常一致, 防 race)
+        if (r.has_custom && r.sp) {
+          $editText.value = r.sp;
+          updateCustomBadge(true, r.chars);
+          $editStatus.textContent = '\u81ea\u5b9a\u4e49 \u00b7 ' + (r.chars || 0) + '\u5b57';
+        } else {
+          // 未设: 留 lastText 初值不变, 用户编辑当前显之全文即可
+          $editStatus.textContent = '\u672a\u8bbe \u00b7 \u53ef\u7f16\u5f53\u524d\u5b9e\u6536';
+        }
       } else if (r.action === 'set') {
-        if (r.ok) { $editStatus.textContent = '\u2714 \u5df2\u6ce8\u5165 ' + (r.chars || 0) + '\u5b57'; updateCustomBadge(true, r.chars); }
-        else $editStatus.textContent = '\u2716 \u5931\u8d25: ' + (r.error || '?');
+        if (r.ok) {
+          $editStatus.textContent = '\u2714 \u5df2\u6ce8\u5165 ' + (r.chars || 0) + '\u5b57 \u00b7 1.5s\u540e\u5173\u95ed';
+          updateCustomBadge(true, r.chars);
+          // v7.3 新: 1.5s 自关闭编辑面板, 让用户立即见 LLM 实收效果
+          if (_editClosing) clearTimeout(_editClosing);
+          _editClosing = setTimeout(_closeEditMode, 1500);
+        } else $editStatus.textContent = '\u2716 \u5931\u8d25: ' + (r.error || '?');
       } else if (r.action === 'reset') {
-        if (r.ok) { $editStatus.textContent = '\u2714 \u5df2\u6e05\u9664'; $editText.value = ''; updateCustomBadge(false); }
-        else $editStatus.textContent = '\u2716 \u6e05\u9664\u5931\u8d25';
+        if (r.ok) {
+          $editStatus.textContent = '\u2714 \u5df2\u6e05\u9664 \u00b7 \u56de\u9ed8\u9053\u5fb7\u7ecf';
+          $editText.value = '';
+          updateCustomBadge(false);
+        } else $editStatus.textContent = '\u2716 \u6e05\u9664\u5931\u8d25';
       }
     }
   });
@@ -1929,12 +2014,48 @@ function activate(ctx) {
 
 async function deactivate() {
   L.info("ext", "deactivate");
+  const isLocal = _proxyHandle && _proxyHandle.server;
+
+  // ── 顺序至关重要 · 反者道之动 ──
+  // 正序 (停代理→清锚→杀LS) 必死 · 因 LS 连死代理 → Windsurf 卡死
+  // 逆序 (透传→清锚→杀LS→停代理) · 道法自然 · 无为而无不为
+
+  // ① 先设透传 · 过渡期 LS 若仍连代理 · 透传至官方 · 不断不乱
+  if (isLocal && _proxyHandle.setMode) {
+    try {
+      _proxyHandle.setMode("passthrough");
+    } catch {}
+  }
+
+  // ② 立即断钩 · 新 LS 不再被截持
+  _cachedAnchored = false;
   removeSpawnHook();
+
+  // ③ 同步清锚 (直写 settings.json) · VS Code API 不可靠 (codeium.* 非注册键)
+  // 文件直写 → Windsurf file watcher → 内存刷新 · 后续 LS 重启指向官方
+  if (isLocal) _clearAnchorFileSync();
+
+  // ④ 杀 LS · 使其重生 · 无钩无锚 → 直连官方
+  if (isLocal) {
+    try {
+      await forceRestartLS();
+    } catch {}
+  }
+
+  // ⑤ dispose webview
   if (_essenceProvider) {
     _essenceProvider.dispose();
     _essenceProvider = null;
   }
+
+  // ⑥ 停代理 · 此时 LS 已死或已重生直连官方 · 安全
   await proxyStop();
+  L.info(
+    "deactivate",
+    isLocal
+      ? "local: passthrough→清锚→杀LS→停代理 · 道法自然"
+      : "remote: 仅停代理",
+  );
 }
 
 module.exports = { activate, deactivate };
