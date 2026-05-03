@@ -1056,7 +1056,7 @@ async function verifyAllAccounts(opts) {
   try {
     await Promise.all(workers);
   } catch {}
-  // v2.1.1 自动重试: 首轮失败的账号 · 串行 + 长间隔 · 水善利万物而不争
+  // v2.1.1 自动重试: 首轮失败的账号 · 串行 + 长间隔 · 水善, 利万物而有静
   if (_failedIndices.length > 0 && _failedIndices.length <= total * 0.8) {
     const retryCount = _failedIndices.length;
     log("verifyAll: 重试 " + retryCount + " 个失败账号 · 串行 · gap 3s");

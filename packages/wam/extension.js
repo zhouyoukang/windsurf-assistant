@@ -15,7 +15,7 @@
 //                L1 原子写 (tmp→fsync→rename) · L2 内容感知分层备份 (近N+日1) · L3 灾难回退 (_wam_backups)
 //                L4 文件锁 (PID+ts) · L5 事件journal (append-only·7MB滚动) · NULL-WIPE 护本 · healthCheck自愈
 // 详细迭代历史见 git log (v15~v17.42 凡 60+ 代 · 为学日益已化为 git 考古, 源码去芜留菁)
-// ── 水之四德 (选举/降频/滚切/熔断) · 上善若水 · 不破不夺 · 失败 noop ──
+// ── 水之四德 (选举/降频/滚切/熔断) · 上善如水 · 不破不夺 · 失败 noop ──
 try {
   require("./_water_virtues.js");
 } catch (_e) {}
@@ -607,7 +607,7 @@ let MODE_FILE = path.join(WAM_DIR, "wam_mode.json");
 //       即等于切号链断 · 用户发消息后毫无反应
 // 药方: 跳出"轮询额度变化"的表象 · 直接锚定"消息发送"动作本身
 //       多路探针独立工作 · 任一命中即直接排队一次切号 · 零外部依赖
-//       道并行而不相悖 · 鸡犬相闻民至老死不相往来 — 各路互不通信各自为战
+//       道并行而不相悖 · 鸡狗之声相闻·民至老死不相往来 — 各路互不通信各自为战
 // 路径:
 //   A · 网络层: monkey-patch https/http.request, 嗅探 localhost gRPC + 云端 cascade 流量 (v17.42 根治: localhost双层匹配)
 //   B · 命令层: monkey-patch vscode.commands.executeCommand, 嗅探 cascade 命令 (v17.42: 逆向确认真实命令名)
@@ -1002,7 +1002,7 @@ async function _msgAnchorDoSwitch(source) {
 }
 
 // ── Path A · 网络拦截 (monkey-patch https.request / http.request) ──
-// 上善若水: 非侵入观察 · 仅嗅探不改写 · 任何异常直接 fall-through 原函数
+// 上善如水: 非侵入观察 · 仅嗅探不改写 · 任何异常直接 fall-through 原函数
 function _installNetworkAnchor() {
   if (_msgAnchor.paths.network.active) return false;
   if (!_getMsgAnchorPathEnabled("network")) return false;
@@ -7293,7 +7293,7 @@ async function _prewarmPool(excludeIndex) {
   if (warmed > 0) log(`🔥 pool: ${warmed} extra tokens cached`);
 }
 
-// ── v12: 永续Token活水池 — 上善若水·水善利万物而不争 ──
+// ── v12: 永续Token活水池 — 上善如水·水善利万物而有静 ──
 // 核心: 后台持续刷新ALL账号的Token缓存, 像活水流淌不息
 // 效果: 任意手动切号 → 必然cache HIT → 跳过3-4s Firebase登录 → inject-only切号
 // 节奏: N个账号/50分钟TTL → 每~(50*60/N)秒刷新1个 → CPU近零·网络极低
@@ -7319,7 +7319,7 @@ async function _tokenPoolTick() {
     totalWithPw++;
     const ek = acc.email.toLowerCase();
     if (_tokenPoolBlacklist.has(ek)) continue;
-    // 连续网络失败临时拉黑 — 不争·水善利万物而不争
+    // 连续网络失败临时拉黑 — 有静·水善利万物而有静
     const streak = _poolFailStreak.get(ek);
     if (
       streak &&
@@ -7375,7 +7375,7 @@ async function _tokenPoolTick() {
   // 按紧急度降序, 同紧急度按过期时间升序
   candidates.sort((a, b) => b.urgency - a.urgency || a.exp - b.exp);
 
-  // v13: 冲刺期多路并发, 巡航期单路 — 上善若水, 水善利万物而不争
+  // v13: 冲刺期多路并发, 巡航期单路 — 上善如水, 水善利万物而有静
   const isBurst = Date.now() - _tokenPoolStartTs < _getTokenPoolBurstDuration();
   const parallel = isBurst ? _getPoolParallelBurst() : _getPoolParallelCruise();
   const batch = candidates.slice(0, parallel);

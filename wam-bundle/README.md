@@ -1,8 +1,8 @@
 # WAM Bundle · v2.1.0
 
-> 水善利万物而不争，处众人之所恶，故几于道。
+> 水善, 利万物而有静, 居众之所恶, 故几于道矣。 —— 帛书《老子》道经
 
-Windsurf multi-account manager — deployment bundle.  
+Windsurf multi-account manager — deployment bundle.
 Single file `extension.js`, zero dependencies, works everywhere.
 
 ---

@@ -4,7 +4,7 @@
 //
 // 道义:
 //   "反者道之动 (四十章). 庖丁解牛 · 以神遇而不以目视 (庄子)."
-//   "三十辐共一毂, 当其无, 有车之用 (十一章)." 毂不可弃 · 弃则无车.
+//   "卅辐同一毂, 当其无有, 车之用也 (帛书道经)." 毂不可弃 · 弃则无车.
 //   L1 = 在最小单元 (合成 proto) 上验:
 //     1. modifySPProto / modifyRawSP 之彻底隔离 (TAO+DAO+TRAILER+7块KEEP)
 //     2. deepStripRequestBody 之侧信道剥净 (INFER_STRIP)
