@@ -67,7 +67,7 @@ if ($RunL2Syn) {
             Write-Host "✗ L2 合成失 · 不打包" -ForegroundColor Red
             exit $LASTEXITCODE
         }
-        Write-Host "✓ L2 合成 · 反代+道德经替换闭环 ✓" -ForegroundColor Green
+        Write-Host "✓ L2 合成 · 反代+德道经替换闭环 ✓" -ForegroundColor Green
     }
 }
 

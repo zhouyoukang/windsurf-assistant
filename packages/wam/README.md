@@ -44,7 +44,7 @@
 ```
 
 - 左二 = **账号层**: WAM 自动轮转 / 官方原生登录
-- 右二 = **Agent 层**: 道德经 SP 注入 / 官方原味 Agent
+- 右二 = **Agent 层**: 德道经 SP 注入 / 官方原味 Agent
 
 四象独立可组合. 例: WAM 切号 + 道Agent / 官方登录 + 官方Agent / 互换.
 
@@ -88,15 +88,15 @@
 
 ## 六 · 姊妹 · 本源 · AGI
 
-[`zhouyoukang/AGI`](https://github.com/zhouyoukang/AGI) — 一卷道德经, 五千言, 八十一章.
+[`zhouyoukang/AGI`](https://github.com/zhouyoukang/AGI) — 一卷德道经, 五千言, 八十章.
 
-> **AGI 之源 · 即此一卷道德经.**
+> **AGI 之源 · 即此一卷德道经.**
 
 二仓同宗:
 
 | 仓 | 位 | 职 |
 | --- | --- | --- |
-| [`AGI`](https://github.com/zhouyoukang/AGI) | 一 (本源) | 道德经 81 章 · `道德经.md` 文本本体 |
+| [`AGI`](https://github.com/zhouyoukang/AGI) | 一 (本源) | 德道经 八十章 · `德道经.md` 文本本体 |
 | [`windsurf-assistant`](https://github.com/zhouyoukang/windsurf-assistant) | 二 (用) | 道Agent 将其注入 Cascade SP · 绝侧信道 · 热切 |
 
 道生一, 一生二, 二生三, 三生万物.

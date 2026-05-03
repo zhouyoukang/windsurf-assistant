@@ -1,9 +1,9 @@
 // extension.js · dao-proxy-min v9.0 · 反者道之动 · 追本溯源彻底隔离
 //
-// 道德经 · 第二十五章: "大曰逝, 逝曰远, 远曰反."
-// 道德经 · 第四十章: "反者道之动, 弱者道之用."
-// 道德经 · 第十一章: "三十辐共一毂, 当其无, 有车之用."
-// 道德经 · 第五十四章: "善建者不拔, 善抱者不脱."
+// 德道经 · 第二十五章: "大曰逝, 逝曰远, 远曰反."
+// 德道经 · 第四十章: "反者道之动, 弱者道之用."
+// 德道经 · 第十一章: "三十辐共一毂, 当其无, 有车之用."
+// 德道经 · 第五十四章: "善建者不拔, 善抱者不脱."
 //
 // v8.0 大曰逝逝曰远远曰反 · 复归 4.0 之道:
 //   大道已逝远 (v7.0-v7.6 过度剥离), 唯反归本源.
@@ -13,7 +13,7 @@
 //   _customSP 一态恒整替.
 //
 // v7.x (过度剥离 · v8.0 反之):
-//   v7.0-v7.4: 彻删官方身份/风格/规训, 仅保工具块替道德经. 过剥失器.
+//   v7.0-v7.4: 彻删官方身份/风格/规训, 仅保工具块替德道经. 过剥失器.
 //   v7.5: 加回 TAO_HEADER 弱声明. 仍剥.
 //   v7.6: 为道日损 · 极简. 仍剥.
 //   v7.8: 一态整替 _customSP. 仍剥.
@@ -55,12 +55,12 @@ const BACKUP_KEY_API = "dao.origin._backup_apiServerUrl";
 const BACKUP_KEY_INFER = "dao.origin._backup_inferenceApiServerUrl";
 
 const DAO_QUOTES = [
-  "道可道，非常道",
+  "道，可道也，非恒道也",
   "上善若水",
   "大音希声，大象无形",
   "道法自然",
   "无为而无不为",
-  "致虚极，守静笃",
+  "致虚极也，守情表也",
   "反者道之动",
   "知者不言，言者不知",
   "天下莫柔弱于水",
@@ -1121,7 +1121,7 @@ async function cmdInvert() {
     } else {
       L.info("cmd-invert", `mode flipped → invert (zero-cost)`);
       vscode.window.showInformationMessage(
-        `道Agent · 道德经 SP 注入 · 下次对话生效`,
+        `道Agent · 德道经 SP 注入 · 下次对话生效`,
       );
     }
   } catch (e) {
@@ -1346,7 +1346,7 @@ async function cmdSelftest() {
     );
     if (r && r.cases) {
       out.appendLine(
-        `  道德经: ${r.dao_chars || "?"}字 · ${r.summary || "?"} · ${r.ok ? "✓全绿" : "✗有失败"}`,
+        `  德道经: ${r.dao_chars || "?"}字 · ${r.summary || "?"} · ${r.ok ? "✓全绿" : "✗有失败"}`,
       );
       for (const c of r.cases || []) {
         out.appendLine(
@@ -1419,7 +1419,7 @@ async function cmdSelftest() {
 
   out.appendLine("\n── L3 · 活检指引 ──");
   out.appendLine(`  1. 运行 "道Agent: 启" → LS 重启 → 向 Cascade 问 '你是谁'`);
-  out.appendLine(`  2. 期答含 '道'/'无为'/'自然' (道德经 SP 注入成功)`);
+  out.appendLine(`  2. 期答含 '道'/'无为'/'自然' (德道经 SP 注入成功)`);
   out.appendLine("════════════════════════════════════════\n");
 }
 
@@ -1544,7 +1544,7 @@ function getEssenceHtml(proxyPort, nonce) {
   try { document.body.setAttribute('data-dao-script', 'running'); } catch(_) {}
 
   // ═══════ v4.5 早期渲染 · 反者道之动 · 不依赖 vsc / postMessage / listener ═══════
-  // 即便后续脚本死, #sp 仍能从 source.js 直拉道德经文.
+  // 即便后续脚本死, #sp 仍能从 source.js 直拉德道经文.
   var _hasRendered = false;
   function _earlyRender(tag) {
     if (_hasRendered || !_PORT) { if (!_PORT) _stage('no-port'); return; }
@@ -1935,7 +1935,7 @@ function activate(ctx) {
       `dao-proxy-min v${PKG_VERSION} activate · port=${_cachedPort} anchored=${_cachedAnchored} user=${os.userInfo().username}`,
     );
 
-    // 道德经横幅
+    // 德道经横幅
     if (vscode.workspace.getConfiguration("dao").get("origin.banner", true)) {
       const q = DAO_QUOTES[Math.floor(Math.random() * DAO_QUOTES.length)];
       vscode.window.showInformationMessage(`道Agent v${PKG_VERSION} · ${q}`);

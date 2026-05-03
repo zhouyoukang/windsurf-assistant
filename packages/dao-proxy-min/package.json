@@ -15,7 +15,7 @@
   "homepage": "https://github.com/zhouyoukang/windsurf-assistant",
   "icon": "media/icon.png",
   "categories": ["AI", "Other"],
-  "keywords": ["windsurf", "cascade", "system-prompt", "dao", "proxy", "minimal", "道德经", "反代", "essence"],
+  "keywords": ["windsurf", "cascade", "system-prompt", "dao", "proxy", "minimal", "德道经", "反代", "essence"],
   "activationEvents": [
     "*"
   ],
@@ -44,7 +44,7 @@
       ]
     },
     "commands": [
-      { "command": "wam.originInvert", "title": "道Agent: 启 (invert · 道德经前置 · 彻删官方着相)", "category": "道Agent" },
+      { "command": "wam.originInvert", "title": "道Agent: 启 (invert · 德道经前置 · 彻删官方着相)", "category": "道Agent" },
       { "command": "wam.originPassthrough", "title": "官方Agent: 启 (passthrough · 锚归云 · 直连)", "category": "道Agent" },
       { "command": "dao.toggleMode", "title": "道Agent: 切换模式 (道 ⇄ 官方)", "category": "道Agent" },
       { "command": "dao.openPreview", "title": "道Agent: 浏览器观真 SP (/origin/preview)", "category": "道Agent" },
@@ -67,7 +67,7 @@
           "default": "invert",
           "enum": ["invert", "passthrough"],
           "enumDescriptions": [
-            "invert — 道Agent · 道德经直为前置 + 彻删官方一切着相之名 (身份/风格/规训) · 工具本身全保不动",
+            "invert — 道Agent · 德道经直为前置 + 彻删官方一切着相之名 (身份/风格/规训) · 工具本身全保不动",
             "passthrough — 官方Agent · 锚归云 · 直连"
           ],
           "description": "首激默模 (二态互斥 · 无off)"
@@ -75,7 +75,7 @@
         "dao.origin.banner": {
           "type": "boolean",
           "default": true,
-          "description": "启动时显道德经横幅"
+          "description": "启动时显德道经横幅"
         }
       }
     }

@@ -1,4 +1,4 @@
-// WAM · 万法归宗 v2.1 · 道德经体 · 用户无为·插件无不为 · 去芜存菁最终版
+// WAM · 万法归宗 v2.1 · 德道经体 · 用户无为·插件无不为 · 去芜存菁最终版
 "use strict";
 const vscode = require("vscode");
 const fs = require("node:fs");

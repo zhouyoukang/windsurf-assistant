@@ -8,7 +8,7 @@
 
 ## 一句话
 
-反代 Windsurf Cascade 之 Connect-RPC，替 SP 为 **TAO_HEADER + 道德经**，深度递归剥离 **27 种侧信道** XML 标签，三档 RPC 全覆盖。per-user 端口自然隔离，二态零代价热切，SSE 实时推送，一键净卸归本源。
+反代 Windsurf Cascade 之 Connect-RPC，替 SP 为 **TAO_HEADER + 德道经**，深度递归剥离 **27 种侧信道** XML 标签，三档 RPC 全覆盖。per-user 端口自然隔离，二态零代价热切，SSE 实时推送，一键净卸归本源。
 
 ## v4.0 万法归宗 (vs v3.0)
 
@@ -49,13 +49,13 @@ http.createServer @ 127.0.0.1:{per-user-port}
 ## SP 替换 + 深度侧信道剥离
 
 ```text
-1. invertSP(): 识别官方 SP (isLikelyOfficialSP) → 整段替为 TAO_HEADER + 道德经
+1. invertSP(): 识别官方 SP (isLikelyOfficialSP) → 整段替为 TAO_HEADER + 德道经
 2. deepStripSideChannels(): 递归下钻 proto 每个字段
    → 27 种 XML-like 侧信道标签 (<user_rules>/<MEMORY[...]>/<communication_style>/...)
    → MEMORY[name] 块特殊匹配
    → discipline 行剥除
    → 多 pass 确保嵌套干净
-3. 输出: LLM 实收 = 道德经 + 用户消息 + 工具 schema · 官方指令全净
+3. 输出: LLM 实收 = 德道经 + 用户消息 + 工具 schema · 官方指令全净
 ```
 
 ## 4 路径闭环自检
@@ -126,7 +126,7 @@ DELETE /origin/custom_sp    # 清自定义 SP
 |---|---|---|
 | `dao.origin.port` | `0` (自动) | 反代端口 · 0=per-user FNV-1a hash (8889..8988) · 非0覆盖 |
 | `dao.origin.defaultMode` | `passthrough` | 首激默模 · `invert`/`passthrough` |
-| `dao.origin.banner` | `true` | 启动时显道德经横幅 |
+| `dao.origin.banner` | `true` | 启动时显德道经横幅 |
 
 运行时自动锚定 (无需手动设):
 
@@ -143,7 +143,7 @@ dao-proxy-min/
 ├─ package.json                              # 7 命令 + 3 配置项
 ├─ vendor/bundled-origin/
 │  ├─ source.js (源.js)                      # ~1500 行 · 本源反代核 · 字段级 proto
-│  └─ _dao_81.txt                            # 道德经八十一章 (6776 字 · 19716B)
+│  └─ _dao_81.txt                            # 德道经八十章 (6776 字 · 19716B)
 ├─ tests/
 │  ├─ L1_unit.js                             # 合成 proto 单元 (离线 · 毫秒)
 │  ├─ L2_synthetic.js                        # 合成帧 → 反代闭环 (在线)

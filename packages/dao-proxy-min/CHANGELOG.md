@@ -41,7 +41,7 @@
 
 | 层 | v4.5 | v5.0 道法自然 |
 |---|---|---|
-| **道层** | TAO_HEADER + 道德经81章 | 同 (永在前) |
+| **道层** | TAO_HEADER + 德道经八十章 | 同 (永在前) |
 | **法层** | 官方 SP 经"系统/用户侧"二分剥削 | 官方 SP **完整保留** (含 user_rules / MEMORY / skills / workflows / memory_system / ide_metadata 全谱) |
 | **术层** | proto deepStrip 递归净化所有 wire=2 字段 | proto **不动** · 各工作区/工具/MCP 自然运行 |
 
@@ -131,7 +131,7 @@ GET /origin/selftest → all_paths_pass: true
 - 极简反代 · ~40KB · 3 命令 · 固定端口 8889
 - source.js 字节扫描 + SP 替换
 - 无 webview · 无热切 · 无 SSE
-- vendor/bundled-origin 内联道德经 81 章
+- vendor/bundled-origin 内联德道经 八十章
 
 ---
 
