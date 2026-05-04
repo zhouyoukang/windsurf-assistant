@@ -31,3 +31,36 @@ __pycache__/
 # ═══ 运行时持态 · 不入库 ═══
 **/_lastinject.json
 **/_origin_mode.txt
+
+# ═══ 本地内部工具链 · 绝不入公开 repo ═══
+# 账号批量注册 · 逆向补丁 · 限流绕过 · 内部管理面板
+# 包含敏感脚本 · 仅本地开发使用
+cloud-pool/
+engine/
+pipeline/
+tools/
+monitor/
+pool-admin/
+diagnostics/
+research/
+bundled-origin/
+
+# scripts/ 细规则: 保留合法构建脚本 (build-vsix.js / deploy.js)
+# 屏蔽敏感一键批处理 (→ 开头 · 中文 .cmd/.ps1/.py)
+scripts/→*
+scripts/一键*
+scripts/*.cmd
+scripts/*.ps1
+scripts/*.py
+
+# ═══ 账号库 (Markdown) · 绝不入库 ═══
+账号库*.md
+accounts*.md
+**/账号库*.md
+
+# ═══ 本地备份 ═══
+*.王弼版.bak
+*.bak.*
+**/_probe_*.cjs
+**/_capture_*.js
+**/_test_bench_*.cjs
