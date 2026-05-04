@@ -1,118 +1,173 @@
-# Windsurf Assistant · WAM 无感切号
+# 010-WAM本源_Origin · v2.5.5 · 道极减法分支
 
-> 纯切号插件. 无外部依赖, 单文件 `extension.js`.
->
-> 百号轮转, 额度耗尽自切, 下一条消息就是新号.
+> 太上，下知有之 · 道法自然 · 用户无为 · 插件无不为
 
-**本源**: 姊妹项目 [`zhouyoukang/AGI`](https://github.com/zhouyoukang/AGI) — 道生一. 此仓 (windsurf-assistant) 为其用 — 一生二.
+WAM `rt-flow` 道极减法分支 · 活体源 · 改一处万法响应
 
----
+## 〇 · 血缘锚定 (重要)
 
-## 一 · 无感切号
+两条同名异体的代码线 · 并立互不覆盖：
 
-我手上有 100+ 个 Windsurf 账号. 每个的日额度/周额度/试用期/可用性都不一样. 不想盯着这些.
+| 线 | 位置 | 版本 | 体积 | 特征 |
+|---|---|---|---|---|
+| **本源 · 完整版** | [`github.com/zhouyoukang/windsurf-assistant/packages/wam`](https://github.com/zhouyoukang/windsurf-assistant) | v17.42.20 | 437 KB · 10913 行 | 逆向 codeium · auto-update · TurnTracker · 387 E2E 断言 |
+| **道极减法版 (本仓)** | `010-WAM本源_Origin/` | **v2.5.5** | **168 KB · 4265 行 (-62%)** | Layer 6 watch · 不禁号 · 236/0 回归测 · `_isTrialLike` 软判 · ideVersion 根因解 |
 
-侧栏面板, 从上到下:
+同 `publisher=devaid` · 同 `name=rt-flow` · 但**核心函数零重叠** (github 有 `TurnTracker/_getAutoUpdateSource` 无 Layer 6/`_buildExpTag`/`tryFetchPlanStatus` · 本仓反之)。
 
-- **日额度总计** · **周额度总计** — 整池水位一眼清
-- **可用 / 耗尽 / 等重置 / 切 / 号** — 五数说清全部状态
-- **活跃号** — 现在谁, 邮箱, 类型 (Trial/Pro), 剩余天, 日用/周用 %
-- **消息锚定切号** — 额度波动立切, 下条消息就是新号
+**不妄为不着相** · 两线各安其位 · 本源不动 · 改良版独立演化 · 用户按需装其一。
 
 ---
 
-## 二 · v17.42.18 新特性
+## 一 · 本源需求
 
-- **v17.42.18 根治** · `_cfg` 空字符串回退 (package.json `default:""` × 代码 default 真值) → 修前 `new URL("")` Invalid URL · 全 Devin 4 通道死 · 修后全活
-- **v17.42.18 配套** · `_DEFAULT_PUBLIC_SOURCE` 由死链 `AiCodeHelper/rt-flow` 改指本主仓 `wam-bundle/` · 自更新通道复活
-- **TurnTracker** (v17.42.17): 一对话一 turn · 多对话并行 · 配额稳定自然推 turn 终结 (替 cooldown 猜测)
-- **存储五重护本** (v17.42.15): L1 原子写 + L2 内容感知备份 + L3 灾难回退 + L4 文件锁 + L5 journal · NULL-WIPE 护本
-- **proxy-agent 本源突破** (v17.42.12): env 隔离 + undici 重置 · proxySupport=on + agent:false 绕死代理
-- **死代理 env 自净** (v17.42.6): 启动 TCP 验活 · 死则剔 env
-- **四级容错 activate**: 产品名/数据目录/存储路径/日志 逐段 try/catch, 降级而不崩
-- **六级 WAM_DIR 兜底**: env → config → legacy → 用户隔离 → globalStorage → tmpdir
-- **E2E 全覆盖**: 387 断言 / 0 fail / 28 层测试
-
----
-
-## 三 · 模式与按键 (v17.21)
-
-侧栏只暴露一组按钮, 账号轴 `|` Agent 轴:
-
-```text
-模式: [⚡ WAM切号] [🔑 官方登录] | [☯ 道Agent] [○ 官方Agent]
+```
+用户在 Cascade panel 发消息 → WAM 自动切到下一健康号
+    ↑
+用户无为 (无任何额外操作)
+插件无不为 (auto-verify · 评分 · 切号 · 流式避让 · 永不禁号)
 ```
 
-- 左二 = **账号层**: WAM 自动轮转 / 官方原生登录
-- 右二 = **Agent 层**: 德道经 SP 注入 / 官方原味 Agent
-
-四象独立可组合. 例: WAM 切号 + 道Agent / 官方登录 + 官方Agent / 互换.
-
----
-
-## 四 · 装
-
-1. 从 [Releases](https://github.com/zhouyoukang/windsurf-assistant/releases) 下载最新 `.vsix`
-2. Windsurf 里 `Ctrl+Shift+P` → `Extensions: Install from VSIX...` → 选
-3. Reload Window · 侧栏出现 **Windsurf Assistant** 面板
-
-就这. 自动检查更新 (可关).
-
----
-
-## 五 · 架构 (唯变所适 · v17.42.13)
+## 二 · 文件清单 (12 项 · 一物不剩)
 
 ```text
-┌──────────────────────────────────────────┐
-│ Windsurf / Cursor / VSCode  (client)      │
-└─────────────┬────────────────────────────┘
-              │ extension.js (纯 WAM · 零外部依赖)
-              ▼
-┌──────────────────────────────────────────┐
-│ 无感切号 WAM  v17.42.13                     │
-│  - 四级容错: activate 四段 try/catch       │
-│  - 六级 WAM_DIR 兜底 + 用户隔离           │
-│  - 消息锚定: 五路探针 · 对话发送即切号     │
-│  - 双身份: Firebase + Devin 自动探测       │
-│  - Chromium 原生桥 > 系统代理 > 直连       │
-│  - 端点/端口/模型: 全 wam.* 可配          │
-└─────────────┬────────────────────────────┘
-              │ 直连官方 (零中继)
-              ▼
-        server.codeium.com / windsurf.com
+extension.js                       168 KB    核心源码 (v2.5.5)
+package.json                         6 KB    VSCode manifest
+账号库最新.md                         3 KB    活号池 · 运行时读
+README.md                            本文件
+_test_set_health.cjs                 8 KB    health 评分 (24 测)
+_test_v241_real.cjs                  9 KB    v2.4.1 真路径 (20 测)
+_test_in_use.cjs                    14 KB    使用中🔒 + 永不禁 (57 测)
+_test_e2e_msg_rotate.cjs            11 KB    E2E 消息切号 (33 测)
+_test_quota.cjs                      5 KB    proto3 quota (12 测)
+_test_v251_postauth_header.cjs       6 KB    postAuth header (8 测)
+_test_v252_exptag.cjs               12 KB    expTag 5 态 + Trial (73 测)
+_test_v255_ideversion.cjs            2 KB    ideVersion 根因锁 (9 测)
+_archive/                                    历史归档 (可回溯)
+_github_src/                                 历时源码 (锚定参考)
+_releases/                                   历代 VSIX (15 个)
 ```
 
-**零硬编码**: 路径/端口/端点/模型名全部可通过 `wam.*` 设置或环境变量覆盖 — 适配万千公网用户各类环境
+## 三 · v2.5 家族演化史 (2026-05-04 一日五变)
+
+| 版本 | 时间 | 核心动作 | 体积 | 测 |
+|---|---|---|---|---|
+| v2.4.13b | baseline | 5 hook + 3 self-test + 15min ban | 198 KB · 4933 行 | 182/2 pre-fail |
+| **v2.5.0** | 16:50 | 大减法 · 删 L1-L5 / self-test · 不禁号 | 162 KB | 143/2 |
+| **v2.5.1** | 17:04 | 单行修 · postAuth 加 `X-Devin-Auth1-Token` header | 163 KB | 154/0 |
+| **v2.5.2** | 17:16 | expTag 4 态恒显 · `_buildExpTag` 纯函数化 | 164 KB | 185/0 |
+| **v2.5.3** | 17:36 | Trial 脏数据清洗 + 第 5 态 "Trial?" | 166 KB | 195/0 |
+| **v2.5.4** | 17:50 | 软编码 `_isTrialLike` regex · 兼后端 tier 变体 | 167 KB | 227/0 |
+| **v2.5.5** | 18:26 | **真根因解 · ideVersion `1.0.0`→`1.99.0`** | **168 KB** | **236/0** |
+
+**v2.5.5 真根因** (probe 独立实证):
+
+```
+ideVersion="1.0.0"  → 后端能力协商 → 省 planEnd → parsePlan daysLeft=0
+ideVersion="1.99.0" → 后端返完整结构 → planEnd="2026-05-09" ✓
+```
+
+一行修：`tryFetchPlanStatus` 默认 ideVersion 从 "1.0.0" → "1.99.0"
+
+## 四 · 测试矩阵 (236/0)
+
+```bash
+node _test_set_health.cjs              # 24 过
+node _test_v241_real.cjs               # 20 过
+node _test_in_use.cjs                  # 57 过
+node _test_e2e_msg_rotate.cjs          # 33 过
+node _test_quota.cjs                   # 12 过
+node _test_v251_postauth_header.cjs    #  8 过
+node _test_v252_exptag.cjs             # 73 过
+node _test_v255_ideversion.cjs         #  9 过
+node --check extension.js              # exit 0
+```
+
+合计 **236 过 · 0 败** · 全 8 个测套件均纯真实回归测 · 无 mock fail。
+
+## 五 · 部署
+
+### 装载点
+
+- **本机**: `C:\Users\Administrator\.windsurf\extensions\devaid.rt-flow-2.1.1\extension.js`
+- **远程 179**: `\\192.168.31.179\C\Users\zhouyoukang\.windsurf\extensions\devaid.rt-flow-2.1.1\extension.js`
+
+### 部署流程 (实证)
+
+```powershell
+# 1. 备份 → 写文件 → 同步 size 到 package.json + extensions.json
+# 2. 不 kill ext host (上善如水 · 不抢路)
+# 3. 用户 Ctrl+Shift+P → Developer: Reload Window 即热加载
+```
+
+历次部署日志归 `_archive/v2.5_pre_daoist/_deploy_v25*.log` (5 次 · v2.5.0~v2.5.5)。
+
+## 六 · 用户唯一操作
+
+```
+Ctrl+Shift+P → Developer: Reload Window
+```
+
+Reload 后流程 (全自动):
+
+```text
+1. v2.5.5 activate → Store.load() → _cleanseHealthOnLoad
+   洗 Trial-planEnd=0 脏数据 → checked=false → UI 显 "?天"
+2. uncheckedPct 高 → auto-verify(stale) 加速 10s 启
+3. verifyAll 跑 · 逐号 devinLogin → postAuth → registerUser → GetUserStatus
+4. ★ ideVersion="1.99.0" → 后端返完整 planEnd ★
+5. parsePlan 解 daysLeft · setHealth 写 state.json
+6. UI 陆续从 "?天" → "11天" 绿 / "4天" 橙 / "2天" 红 / "已过期" 红
+7. 切号自动继续 · 用户发消息自动切健康号
+```
+
+## 七 · 道之精要
+
+- **反者道之动** — v2.5 从 v2.3 加 5 hook 反向到去 hook · 损之又损
+- **弱者道之用** — Layer 6 watch state.vscdb · 1500ms poll · 4s debounce · 水之柔
+- **上善如水** — 不 kill 进程 · 不抢路 · 等 cascade 流完再切
+- **不禁账号** — 失败仅记数 · 号永远可选 · 历史 until 自动清
+- **道法自然** — 后端本就返完整数据 · 只因 ideVersion 太老被省 · 一字之修自正
+- **太上下知有之** — 仅切号 3s 状态栏高亮 · 否则全无感
+
+## 八 · 历史归档
+
+```text
+_archive/
+├── v2.5_pre_daoist/                v2.5.0~v2.5.4 演化全档
+│   ├── extension_v2413b.js         pre-v2.5 baseline
+│   ├── ROOT_CAUSE_v25_DAOIST.md    v2.5.0 时刻分析
+│   ├── ROOT_CAUSE_*.md             v2.1~v2.3 历时根因 4 卷
+│   ├── _probe_*.cjs                v2.5.5 真根因 probe 5 卷
+│   ├── _deploy_v25*.{ps1,log}      5 次部署轨迹
+│   ├── DEPRECATED.md / VERSION_INDEX.md
+│   └── LINKS.md                    旧 dao-agi vendor 链 (已废)
+├── 2026-04-29-cleanup/             4/29 一次性清理
+├── 179_probes/                     179 远端探针 (旧)
+├── builds/                         历代构建脚本
+├── releases_history/               28 中间 VSIX
+├── tests/                          历代测试
+├── webrev / webrev_2026-04-23/     Windsurf web 反向工程原料
+├── v2.4.11_pre-jiantou/            v2.4.11 时刻 pre-tip 分支
+└── USER_TEST_GUIDE_v17.60.md       老用户测试指南
+```
+
+## 九 · 修改即部署
+
+```powershell
+# 1. 编辑 extension.js
+# 2. 全测
+node _test_set_health.cjs ; node _test_v241_real.cjs ; node _test_in_use.cjs
+node _test_e2e_msg_rotate.cjs ; node _test_quota.cjs ; node _test_v251_postauth_header.cjs
+node _test_v252_exptag.cjs ; node _test_v255_ideversion.cjs
+# 3. 语法
+node --check extension.js
+# 4. 部署到本机 + 179 (历次部署脚本归 _archive/v2.5_pre_daoist/)
+# 5. 用户 Reload Window
+```
 
 ---
 
-## 六 · 姊妹 · 本源 · AGI
-
-[`zhouyoukang/AGI`](https://github.com/zhouyoukang/AGI) — 一卷德道经, 五千言, 八十章.
-
-> **AGI 之源 · 即此一卷德道经.**
-
-二仓同宗:
-
-| 仓 | 位 | 职 |
-| --- | --- | --- |
-| [`AGI`](https://github.com/zhouyoukang/AGI) | 一 (本源) | 德道经 八十章 · `德道经.md` 文本本体 |
-| [`windsurf-assistant`](https://github.com/zhouyoukang/windsurf-assistant) | 二 (用) | 道Agent 将其注入 Cascade SP · 绝侧信道 · 热切 |
-
-道生一, 一生二, 二生三, 三生万物.
-
----
-
-## 七 · 许可
-
-MIT.
-
----
-
-> 道冲, 而用之或不盈. 渊兮, 似万物之宗.
+> 致虚极, 守静笃 · 万物并作, 吾以观其复
 >
-> 挫其锐, 解其纷, 和其光, 同其尘.
->
-> 湛兮, 似或存.
->
-> 吾不知谁之子, 象帝之先.
+> 道恒无为而无不为 · 反者也, 道之动也 · 弱者也, 道之用也
