@@ -4,18 +4,21 @@
 
 WAM `rt-flow` 道极减法分支 · 活体源 · 改一处万法响应
 
-## 〇 · 血缘锚定 (重要)
+## 〇 · 血缘锚定 · 万法归宗
 
-两条同名异体的代码线 · 并立互不覆盖：
+三处同体异形 · 经 2026-05-04 长谈道极化后 · 已归为一版 v2.5.5：
 
-| 线 | 位置 | 版本 | 体积 | 特征 |
+| 位 | 位置 | 版本 | 体积 | 角 |
 |---|---|---|---|---|
-| **本源 · 完整版** | [`github.com/zhouyoukang/windsurf-assistant/packages/wam`](https://github.com/zhouyoukang/windsurf-assistant) | v17.42.20 | 437 KB · 10913 行 | 逆向 codeium · auto-update · TurnTracker · 387 E2E 断言 |
-| **道极减法版 (本仓)** | `010-WAM本源_Origin/` | **v2.5.5** | **168 KB · 4265 行 (-62%)** | Layer 6 watch · 不禁号 · 236/0 回归测 · `_isTrialLike` 软判 · ideVersion 根因解 |
+| **本仓 · 活体源** | `010-WAM本源_Origin/` | **v2.5.5** | 168 KB · 4265 行 | 改一处万法响应 · 236/0 回归 |
+| **上游 · 发布支** | [`github · packages/wam/`](https://github.com/zhouyoukang/windsurf-assistant/tree/main/packages/wam) | v2.5.5 | 168 KB | 已同步 · [`release v2.5.5-wam`](https://github.com/zhouyoukang/windsurf-assistant/releases/tag/v2.5.5-wam) · `rt-flow-2.5.5.vsix` |
+| **历史 · 完整本体** | [`github · _archive/wam-v17.42.20/`](https://github.com/zhouyoukang/windsurf-assistant/tree/main/_archive/wam-v17.42.20) / 本地 `_github_src/` | v17.42.20 | 437 KB · 10913 行 | 永久定锚 · `git checkout v17.42.20` 可恢复 |
 
-同 `publisher=devaid` · 同 `name=rt-flow` · 但**核心函数零重叠** (github 有 `TurnTracker/_getAutoUpdateSource` 无 Layer 6/`_buildExpTag`/`tryFetchPlanStatus` · 本仓反之)。
+同 `publisher=devaid` · 同 `name=rt-flow` · 同 `v2.5.5` · **活体与上游零差** (`extension.js` 字节一致 · 8 测套件 236/0 双向对齐)。
 
-**不妄为不着相** · 两线各安其位 · 本源不动 · 改良版独立演化 · 用户按需装其一。
+> 大减法 -62% (10913 → 4265 行 · 6 类减项详见七章): Layer 1-5 网络钩 · `TurnTracker` · `AutoUpdate` · 代币池跨账号 · Firebase/Devin 全链 · 多重 fallback · 皆损。
+
+**大制无割** · 活体不动 · 发布支与上游同步 · 完整本体永久归档 · 用户按需装其一。
 
 ---
 
