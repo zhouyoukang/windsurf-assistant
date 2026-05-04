@@ -12,11 +12,15 @@ Windsurf 三器: 切号 · 反代 · 部署. 各安其位, 不相干扰.
 
 | Plugin | Concern | Edition | Version |
 |---|---|---|---|
-| [`packages/wam/`](packages/wam/) | **切号** · account rotation · message anchoring · token pool · Firebase + Devin | full | v17.42.20 |
+| [`packages/wam/`](packages/wam/) | **切号** · Layer 6 file watcher (cross-process 稳) · 不禁号 · `_isTrialLike` 软判 · ideVersion 根因解 | minimal | **v2.5.5** 🆕 |
 | [`packages/dao-proxy-min/`](packages/dao-proxy-min/) | **反代** · Cascade Connect-RPC reverse proxy · `<user_rules>` 可信格式注入德道经 · 侧信道深度净化 | minimal | **v9.1.2** 🆕 |
 | [`wam-bundle/`](wam-bundle/) | **部署** · single-file Devin-only WAM · zero-config | minimal | v2.1.0 ✅ |
 
-> 旧 `packages/wam-proxy/` (v17.51 wam-dao) 已并入 `dao-proxy-min` v5.0 道法自然 (损 250 行). 见下文沿革.
+> 旧 `packages/wam-proxy/` (v17.51 wam-dao) 已并入 `dao-proxy-min` v5.0 道法自然 (损 250 行).
+>
+> 旧 `packages/wam` (v17.42.20 满载, 437 KB / 10913 行, Layer 1-5 网络钩 · 387 E2E) 已归档于 [`_archive/wam-v17.42.20/`](_archive/wam-v17.42.20/). 新本体 v2.5.5 道极减法版 (-62%, 168 KB / 4265 行, 231 回归测过) 接续.
+
+**双轨并行** · 切号 (`packages/wam` 道极版) | 反代 (`packages/dao-proxy-min` 净化版) · 各臻其极 · 不相代而相成.
 
 ---
 
