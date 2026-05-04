@@ -101,45 +101,27 @@ GET /origin/selftest → all_paths_pass: true
 
 ## packages/wam · 切号 (v2.5.5 道极减法版)
 
-`rt-flow` · 168 KB / 4265 行 · 从 v17.42.20 满载版 (437 KB / 10913 行) **减法演化 -62%**.
+`rt-flow` · 168 KB / 4265 行 · 自 v17.42.20 满载版 (437 KB / 10913 行) **减法 -62%**.
 
-### 核心思想 · Layer 6 文件 watcher
-
-Windsurf 切号工作进程与 Cascade 渲染进程**跨进程隔离** (cross-process isolation), Layer 1-5 网络钩 (http.request / net.Socket / undici / fetch / WebSocket) 无效. v2.5.0 跳出网络钩路径, 转用 **Layer 6 file watcher** 监听 `state.vscdb` mtime · 每条 Cascade 消息发送触发写 · file watch 跨进程稳.
-
-### 五大核心
+### 三味核心
 
 | 特性 | 道义 |
 |---|---|
-| **Layer 6 file watch** | `fs.watchFile()` 监听 `%APPDATA%\Windsurf\User\workspaceStorage\<hash>\state.vscdb` · 消息触发即切号 |
-| **不禁号** (soft-score) | 失败不封禁 · 转评分降权 · 恒使民无知、无欲 (保账号复活可能) |
-| **`_isTrialLike` 软判** | 正则 `/trial/i` · 兼容 Team Trial / Free Trial / Pro Trial / 小写 trial 全变体 |
-| **`_buildExpTag` 5 态** | `?天` (未验) / `N天` (红橙绿阶梯) / `已过期` / `Trial?` / `∞` (Pro 永久) |
-| **`ideVersion 1.99.0`** | 根因锁: 后端按 `metadata.ideVersion` 能力协商返 `planEnd` · 1.0.0 省略 / 1.99.0 完整返 |
+| **Layer 6** | `fs.watchFile(state.vscdb)` 跨进程稳 · 替 Layer 1-5 失效网络钩 |
+| **不禁号** | 失败转评分降权 · 保账号复活可能 |
+| **ideVersion 1.99.0** | 后端按能力协商返 `planEnd` · 治 Trial 脏数据根因 |
 
-### 18 命令 · 22 配置项 · 8 测试矩阵
+测试 **231 过** (公开回归) · **236 过** (本地真打) · 详见 [`packages/wam/CHANGELOG.md`](packages/wam/CHANGELOG.md).
 
-见 [`packages/wam/CHANGELOG.md`](packages/wam/CHANGELOG.md) · [`packages/wam/README.md`](packages/wam/README.md).
+### 装载
 
-测试: **231 回归过** (公开 repo 模式 · Test 5/6 真打 skip) · **236 过** (本地真账号库 · 5 号真链路 verifyOneAccount).
+[Release Assets](https://github.com/zhouyoukang/windsurf-assistant/releases/tag/v2.5.5-wam) 下载 `rt-flow-2.5.5.vsix` · 或 `node scripts/build-vsix.js wam` 自建.
 
-### v2.5 大减法路径
+### 历史
 
-| 减项 | 行 | 因 |
-|---|---|---|
-| Layer 1-5 网络钩 | -2300 | cross-process 无效 |
-| `TurnTracker` 对话计数 | -800 | Layer 6 已替 |
-| `AutoUpdate` 远端更新 | -600 | 用户自部署 |
-| 代币池跨账号管理 | -400 | 单文件本地 state 足 |
-| Firebase / Devin 登录链 | -2200 | `devinLogin + windsurfPostAuth` 双步即足 |
-| 多重 fallback | -200 | 信道单点已稳 |
-| **共减** | **-6648** | **(10913 → 4265)** |
+v17.42.x 满载系 (Layer 1-5 网络钩 · 387 E2E) 归档于 [`_archive/wam-v17.42.20/`](_archive/wam-v17.42.20/) · `git checkout v17.42.20 -- packages/wam/` 恢复.
 
-> 反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无. —— 帛书《老子》德经
-
-### 历史 · v17.42.20 满载已归档
-
-v17.42.x 系**满载本体** (437 KB · 10913 行 · 387 E2E · Layer 1-5 网络钩) 完整归档于 [`_archive/wam-v17.42.20/`](_archive/wam-v17.42.20/) · 可用 `git checkout v17.42.20` 恢复.
+> 为学者日益 · 闻道者日损 · 多言数穷 · 不若守于中. —— 帛书《老子》
 
 ---
 
